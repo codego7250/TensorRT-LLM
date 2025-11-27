@@ -119,6 +119,7 @@ def submit_job(config, log_dir):
         log_base = os.path.join(env_config['work_dir'],
                                 f"{date_prefix}/{isl}-{osl}")
 
+
         # Get eplb num_slots for gen worker
         load_balancer_config = config['worker_config']['gen'].get(
             'moe_config', {}).get('load_balancer', {})
@@ -135,6 +136,7 @@ def submit_job(config, log_dir):
 
         # Create full log directory path
         log_dir = os.path.join(log_base, dir_suffix)
+
 
     # Remove existing directory if it exists
     if os.path.exists(log_dir):
