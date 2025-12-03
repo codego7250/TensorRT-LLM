@@ -61,15 +61,12 @@ from tensorrt_llm.serve.openai_protocol import (ChatCompletionMessageParam,
                                                 StreamingResponsesResponse,
                                                 UCompletionRequest,
                                                 UCompletionResponse)
+
 from tensorrt_llm.serve.tool_parser.base_tool_parser import BaseToolParser
 from tensorrt_llm.serve.tool_parser.core_types import ToolCallItem
 from tensorrt_llm.serve.tool_parser.tool_parser_factory import ToolParserFactory
 
 from .harmony_adapter import HarmonyAdapter, get_harmony_adapter
-
-# yapf: enable
-
-# yapf: enable
 
 REASONING_EFFORT = {
     "high": ReasoningEffort.HIGH,
