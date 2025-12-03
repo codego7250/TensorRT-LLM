@@ -994,7 +994,6 @@ class OpenAIServer:
                     use_harmony=self.use_harmony,
                     reasoning_parser=self.llm.args.reasoning_parser,
                     tool_parser=self.tool_parser)
-
         except asyncio.CancelledError:
             if promise is not None:
                 promise.abort()
