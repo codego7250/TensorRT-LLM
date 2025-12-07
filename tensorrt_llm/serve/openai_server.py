@@ -3,6 +3,7 @@ import asyncio
 import os
 import re
 import signal
+import socket
 import traceback
 from collections import deque
 from contextlib import asynccontextmanager
@@ -1009,7 +1010,7 @@ class OpenAIServer:
         return JSONResponse(content={"detail": "None"})
 
 
-    async def __call__(self, host, port):
+    async def __call__(self, host, port, sockets: list[socket.socket] | None = None):
         # Store the binding address for server registration
         self.binding_addr = f"http://{host}:{port}"
         self.host = host
@@ -1019,4 +1020,4 @@ class OpenAIServer:
                                 port=port,
                                 log_level="info",
                                 timeout_keep_alive=TIMEOUT_KEEP_ALIVE)
-        await uvicorn.Server(config).serve()
+        await uvicorn.Server(config).serve(sockets=sockets)
