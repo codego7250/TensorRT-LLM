@@ -39,6 +39,11 @@ from ..logger import logger, severity_map
               default=None,
               help="Path | Name of the tokenizer."
               "Specify this value only if using TensorRT engine as model.")
+@click.option("--tokenizer_mode",
+              type=click.Choice(["auto", "slow", "deepseek_v32"]),
+              default="auto",
+              help="Tokenizer mode. Use 'deepseek_v32' for DeepSeek V32 models "
+              "with custom chat template support.")
 @click.option(
     "--custom_tokenizer",
     type=str,
@@ -125,7 +130,6 @@ def main(ctx, model: str, tokenizer: Optional[str],
          trust_remote_code: bool, revision: Optional[str],
          extra_llm_api_options: Optional[str], disable_kv_cache_reuse: bool):
     logger.set_level(log_level)
-
     kv_cache_config = KvCacheConfig(
         free_gpu_memory_fraction=kv_cache_free_gpu_memory_fraction,
         enable_block_reuse=not disable_kv_cache_reuse)
