@@ -460,8 +460,9 @@ class OpenAIServer:
                 first_response = await anext(promise)
                 raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds()
                 pp_results = first_response.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(first_response, args)
-                for pp_res in pp_results:
-                    yield pp_res
+                if pp_results is not None:
+                    for pp_res in pp_results:
+                        yield pp_res
                 # Making sure we can handling the situation where there is only one response
                 res = first_response
                 async for res in promise:
@@ -563,6 +564,11 @@ class OpenAIServer:
             else:
                 response = await create_chat_response(promise, postproc_params, disaggregated_params)
                 return JSONResponse(content=response.model_dump())
+
+        except asyncio.CancelledError:
+            if promise is not None:
+                promise.abort()
+            return self.create_error_response("cancelled")
         except CppExecutorError:
             logger.error(traceback.format_exc())
             # If internal executor error is raised, shutdown the server
@@ -638,6 +644,10 @@ class OpenAIServer:
             response = await create_mm_embedding_response(promise)
             return JSONResponse(content=response.model_dump())
 
+        except asyncio.CancelledError:
+            if promise is not None:
+                promise.abort()
+            return self.create_error_response("cancelled")
         except CppExecutorError:
             logger.error(traceback.format_exc())
             # If internal executor error is raised, shutdown the server
@@ -798,6 +808,11 @@ class OpenAIServer:
                                               for promise, params in zip(promises, postproc_params_collection)])
                 response = merge_completion_responses(rsps) if len(rsps) > 1 else rsps[0]
                 return JSONResponse(content=response.model_dump())
+
+        except asyncio.CancelledError:
+            if promise is not None:
+                promise.abort()
+            return self.create_error_response("cancelled")
         except CppExecutorError:
             logger.error(traceback.format_exc())
             # If internal executor error is raised, shutdown the server
@@ -979,6 +994,11 @@ class OpenAIServer:
                     use_harmony=self.use_harmony,
                     reasoning_parser=self.llm.args.reasoning_parser,
                     tool_parser=self.tool_parser)
+
+        except asyncio.CancelledError:
+            if promise is not None:
+                promise.abort()
+            return self.create_error_response("cancelled")
         except CppExecutorError:
             logger.error(traceback.format_exc())
             # If internal executor error is raised, shutdown the server

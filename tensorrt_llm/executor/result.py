@@ -259,7 +259,10 @@ class GenerationResultBase:
             output.token_ids.extend(response_tensors.output_token_ids[src_idx])
 
         if response_tensors.cum_log_probs is not None:
-            output.cumulative_logprob = response_tensors.cum_log_probs[src_idx]
+            if src_idx < len(response_tensors.cum_log_probs):
+                output.cumulative_logprob = response_tensors.cum_log_probs[src_idx]
+            else:
+                output.cumulative_logprob = float('-inf')
 
         # prompt logprobs handling
         if logprobs_result and logprobs_result.prompt is not None:  # both backends
@@ -277,14 +280,12 @@ class GenerationResultBase:
             # contains a streamwise monotonically growing list of logprobs.
             # so we need to accumulate only the new ones unique to that particular streamed response
             if self.use_trtllm_sampler:
-                assert output._last_logprobs_len <= len(
-                    response_tensors.log_probs[src_idx]
-                ), (f"_last_logprobs_len ({output._last_logprobs_len}) > log_probs length ("
-                    f"{len(response_tensors.log_probs[src_idx])})")
-                output.logprobs += response_tensors.log_probs[src_idx][
-                    output._last_logprobs_len:]
+                if (src_idx < len(response_tensors.log_probs)):
+                    output.logprobs += response_tensors.log_probs[src_idx][
+                        output._last_logprobs_len:]
             else:
-                output.logprobs += response_tensors.log_probs[src_idx]
+                if (src_idx < len(response_tensors.log_probs)):
+                    output.logprobs += response_tensors.log_probs[src_idx]
 
             # overcome some WAR in the cpp executor
             if finish_reasons[
@@ -600,7 +601,7 @@ class DetokenizedGenerationResultBase(GenerationResultBase):
         )
         self.tokenizer = tokenizer
         self._streaming = streaming
-
+    
     def _handle_response(self, response: "GenerationExecutor.Response"):
         GenerationResultBase._handle_response(self, response)
 
@@ -789,8 +790,12 @@ class GenerationResult(GenerationResultBase):
     async def __anext__(self):
         if self._done:
             raise StopAsyncIteration
-
-        await self._aresult_step()
+        
+        try:
+            await self._aresult_step()
+        except asyncio.CancelledError:
+            # optional: log/cleanup, set flags, drain/cancel child tasks
+            self._done = True
         return self
 
     def _exception(self, timeout: Optional[float] = None):
