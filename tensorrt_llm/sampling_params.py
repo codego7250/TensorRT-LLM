@@ -298,33 +298,19 @@ class SamplingParams:
         Executor class of C++ runtime, the LLM API disallows such combination.
         """
         if self.top_p is not None and (self.top_p < 0 or self.top_p > 1):
-            raise ValueError(f"require 0 <= top_p <= 1, got top_p={self.top_p}")
+            self.top_p = 0.0
         if self.top_k is not None and self.top_k < 0:
-            raise ValueError(f"require top_k >= 0, got top_k={self.top_k}")
+            self.top_k = 1
         if self.temperature is not None and self.temperature < 0:
-            raise ValueError(f"require temperature >= 0, got temperature={self.temperature}")
+            self.temperature = 0
 
         if self.best_of is not None and self.best_of < self.n:
-            raise ValueError(f"best_of ({self.best_of}) cannot be less than n ({self.n})")
-
-        if (
-            self.best_of is not None
-            and self.best_of > 1
-            and self._greedy_decoding
-            and not os.environ.get("TLLM_ALLOW_N_GREEDY_DECODING", None)
-        ):
-            raise ValueError(
-                f"Greedy decoding in the LLM API does not allow multiple "
-                f"returns. Please set to best_of=1, got best_of={self.best_of}. "
-                f"Please set to best_of=1 or set an environment variable "
-                f"TLLM_ALLOW_N_GREEDY_DECODING=1 to allow best_of > 1 "
-                f"under the greedy decoding."
-            )
-
+            self.best_of = self.n
         if self.truncate_prompt_tokens is not None and self.truncate_prompt_tokens < 1:
-            raise ValueError(
-                f"truncate_prompt_tokens must be >= 1, got {self.truncate_prompt_tokens}"
-            )
+            self.truncate_prompt_tokens = 1
+
+        if self.guided_decoding is not None:
+            self.guided_decoding._validate()
 
         if self.guided_decoding is not None:
             self.guided_decoding._validate()
