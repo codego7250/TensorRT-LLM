@@ -5007,8 +5007,12 @@ class TestMistralLarge3_675B(LlmapiAccuracyTestHarness):
                 max_draft_len=2,
                 speculative_model_dir=
                 f"{llm_models_root()}/Mistral-Large-3-675B/Mistral-Large-3-675B-Instruct-2512-Eagle/",
+<<<<<<< HEAD
                 eagle3_one_model=True,
                 eagle3_model_arch="mistral_large3")
+=======
+                eagle3_one_model=True)
+>>>>>>> 318c76423 ([None][feat] Support Mistral Large3 LLM part (#9820))
         with LLM(
                 f"{llm_models_root()}/Mistral-Large-3-675B/Mistral-Large-3-675B-Instruct-2512/",
                 checkpoint_format="mistral",
@@ -5066,4 +5070,8 @@ class TestNemotronV3Nano(LlmapiAccuracyTestHarness):
             task.evaluate(llm,
                           extra_evaluator_kwargs=self.EXTRA_EVALUATOR_KWARGS)
 =======
+<<<<<<< HEAD
 >>>>>>> e49c70f6d ([None][feat] Support Mistral Large3 LLM part (#9820))
+=======
+>>>>>>> 318c76423 ([None][feat] Support Mistral Large3 LLM part (#9820))
+>>>>>>> 41c7738de ([None][feat] Support Mistral Large3 LLM part (#9820))
