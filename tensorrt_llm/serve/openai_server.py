@@ -744,8 +744,9 @@ class OpenAIServer:
                         pp_result = post_processor(output, args)
                     else:
                         pp_result = output.outputs[0]._postprocess_result
-                    for pp_res in pp_result:
-                        yield pp_res
+                    if pp_result is not None:
+                        for pp_res in pp_result:
+                            yield pp_res
                 await self._extract_metrics(output, raw_request)
             except:
                 logger.error(traceback.format_exc())

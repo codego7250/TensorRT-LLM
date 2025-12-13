@@ -835,6 +835,8 @@ async def _create_input_tokens_harmony(
 
     return _render_for_completion(messages)
 
+def int_or_bool_to_none(x):
+    return None if type(x) in (int, bool) else x
 
 async def request_preprocess(
     request: ResponsesRequest,
@@ -854,6 +856,7 @@ async def request_preprocess(
         })
 
     prev_response_id = request.previous_response_id
+    request.reasoning_effort = int_or_bool_to_none(request.reasoning_effort)
 
     # TODO: better way to enable metrics
     if len(os.getenv("TRTLLM_KVCACHE_TIME_OUTPUT_PATH", "")) > 0:
