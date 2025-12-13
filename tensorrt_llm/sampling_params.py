@@ -298,7 +298,7 @@ class SamplingParams:
         Executor class of C++ runtime, the LLM API disallows such combination.
         """
         if self.top_p is not None and (self.top_p < 0 or self.top_p > 1):
-            self.top_p = 0.0
+            self.top_p = 0.1
         if self.top_k is not None and self.top_k < 0:
             self.top_k = 1
         if self.temperature is not None and self.temperature < 0:
