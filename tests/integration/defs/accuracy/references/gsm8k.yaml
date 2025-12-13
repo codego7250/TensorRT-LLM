@@ -293,8 +293,3 @@ mistral/Mistral-Large-3-675B:
     accuracy: 86.1
 nvidia/Nemotron-Super-V3:
   - accuracy: 84.38
-nvidia/Nemotron-3-Nano:
-  - accuracy: 69.37
-  - quant_algo: FP8
-    kv_cache_quant_algo: FP8
-    accuracy: 68.73

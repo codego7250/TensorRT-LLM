@@ -4933,9 +4933,16 @@ class TestMistralLarge3_675B(LlmapiAccuracyTestHarness):
     def test_nvfp4_4gpus(self, tp_size, pp_size, ep_size, attention_dp,
                          cuda_graph, overlap_scheduler, moe_backend, eagle3):
 
+<<<<<<< HEAD
         sm_version = get_sm_version()
         if moe_backend == "TRTLLM" and sm_version in (120, 121):
             pytest.skip(f"{moe_backend} backend does not support SM 120 or 121")
+=======
+        if moe_backend == "TRTLLM" and (get_sm_version() == 120
+                                        or get_sm_version() == 121):
+            pytest.skip(
+                "MOE TRTLLM backend does not support SM version 120 or 121")
+>>>>>>> e49c70f6d ([None][feat] Support Mistral Large3 LLM part (#9820))
 
         pytorch_config = dict(
             disable_overlap_scheduler=not overlap_scheduler,
@@ -5018,6 +5025,7 @@ class TestMistralLarge3_675B(LlmapiAccuracyTestHarness):
             task.evaluate(llm)
             task = GSM8K(self.MODEL_NAME)
             task.evaluate(llm)
+<<<<<<< HEAD
 
 
 class TestNemotronV3Nano(LlmapiAccuracyTestHarness):
@@ -5058,3 +5066,5 @@ class TestNemotronV3Nano(LlmapiAccuracyTestHarness):
             task = GSM8K(self.MODEL_NAME)
             task.evaluate(llm,
                           extra_evaluator_kwargs=self.EXTRA_EVALUATOR_KWARGS)
+=======
+>>>>>>> e49c70f6d ([None][feat] Support Mistral Large3 LLM part (#9820))
