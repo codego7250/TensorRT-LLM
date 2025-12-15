@@ -193,7 +193,6 @@ class BaseSparseAttentionConfig(StrictBaseModel):
         description=
         "The sequence length threshold for separating short and long sequences."
     )
-
     @property
     def algorithm(self) -> str:
         raise NotImplementedError("Algorithm must be implemented in subclasses")
