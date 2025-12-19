@@ -1720,6 +1720,8 @@ class TorchSampler(Sampler, AsyncWorkerMixin):
         state: SampleStateTorch,
         resource_manager: Optional[ResourceManager] = None,
     ) -> None:
+        if state is None:
+            return
         assert isinstance(state, SampleStateTorch)
         if state.sampler_event:
             state.sampler_event.synchronize()
