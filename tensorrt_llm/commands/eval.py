@@ -21,7 +21,7 @@ import tensorrt_llm.profiler as profiler
 from .. import LLM as PyTorchLLM
 from .._tensorrt_engine import LLM
 from ..evaluate import (GSM8K, MMLU, MMMU, CnnDailymail, GPQADiamond,
-                        GPQAExtended, GPQAMain, JsonModeEval, LongBenchV2)
+                    GPQAExtended, GPQAMain, JsonModeEval, LongBenchV2)
 from ..llmapi import BuildConfig, KvCacheConfig
 from ..llmapi.llm_utils import update_llm_args_with_extra_options
 from ..logger import logger, severity_map
@@ -29,21 +29,21 @@ from ..logger import logger, severity_map
 
 @click.group()
 @click.option(
-    "--model",
-    required=True,
-    type=str,
-    help="model name | HF checkpoint path | TensorRT engine path",
+"--model",
+required=True,
+type=str,
+help="model name | HF checkpoint path | TensorRT engine path",
 )
 @click.option("--tokenizer",
-              type=str,
-              default=None,
-              help="Path | Name of the tokenizer."
-              "Specify this value only if using TensorRT engine as model.")
+          type=str,
+          default=None,
+          help="Path | Name of the tokenizer."
+          "Specify this value only if using TensorRT engine as model.")
 @click.option("--tokenizer_mode",
-              type=click.Choice(["auto", "slow", "deepseek_v32"]),
-              default="auto",
-              help="Tokenizer mode. Use 'deepseek_v32' for DeepSeek V32 models "
-              "with custom chat template support.")
+          type=click.Choice(["auto", "slow", "deepseek_v32"]),
+          default="auto",
+          help="Tokenizer mode. Use 'deepseek_v32' for DeepSeek V32 models "
+          "with custom chat template support.")
 @click.option(
     "--custom_tokenizer",
     type=str,
@@ -77,50 +77,74 @@ from ..logger import logger, severity_map
     "Maximum number of batched input tokens after padding is removed in each batch."
 )
 @click.option(
-    "--max_seq_len",
-    type=int,
-    default=BuildConfig.model_fields["max_seq_len"].default,
-    help="Maximum total length of one request, including prompt and outputs. "
-    "If unspecified, the value is deduced from the model config.")
+"--backend",
+type=click.Choice(["pytorch", "tensorrt"]),
+default="pytorch",
+help="The backend to use for evaluation. Default is pytorch backend.")
+@click.option('--log_level',
+          type=click.Choice(severity_map.keys()),
+          default='info',
+          help="The logging level.")
+@click.option("--max_beam_width",
+          type=int,
+          default=BuildConfig.model_fields["max_beam_width"].default,
+          help="Maximum number of beams for beam search decoding.")
+@click.option("--max_batch_size",
+          type=int,
+          default=BuildConfig.model_fields["max_batch_size"].default,
+          help="Maximum number of requests that the engine can schedule.")
+@click.option(
+"--max_num_tokens",
+type=int,
+default=BuildConfig.model_fields["max_num_tokens"].default,
+help=
+"Maximum number of batched input tokens after padding is removed in each batch."
+)
+@click.option(
+"--max_seq_len",
+type=int,
+default=BuildConfig.model_fields["max_seq_len"].default,
+help="Maximum total length of one request, including prompt and outputs. "
+"If unspecified, the value is deduced from the model config.")
 @click.option("--tp_size", type=int, default=1, help='Tensor parallelism size.')
 @click.option("--pp_size",
-              type=int,
-              default=1,
-              help='Pipeline parallelism size.')
+          type=int,
+          default=1,
+          help='Pipeline parallelism size.')
 @click.option("--ep_size",
-              type=int,
-              default=None,
-              help="expert parallelism size")
+          type=int,
+          default=None,
+          help="expert parallelism size")
 @click.option("--gpus_per_node",
-              type=int,
-              default=None,
-              help="Number of GPUs per node. Default to None, and it will be "
-              "detected automatically.")
+          type=int,
+          default=None,
+          help="Number of GPUs per node. Default to None, and it will be "
+          "detected automatically.")
 @click.option("--kv_cache_free_gpu_memory_fraction",
-              type=float,
-              default=0.9,
-              help="Free GPU memory fraction reserved for KV Cache, "
-              "after allocating model weights and buffers.")
+          type=float,
+          default=0.9,
+          help="Free GPU memory fraction reserved for KV Cache, "
+          "after allocating model weights and buffers.")
 @click.option("--trust_remote_code",
-              is_flag=True,
-              default=False,
-              help="Flag for HF transformers.")
+          is_flag=True,
+          default=False,
+          help="Flag for HF transformers.")
 @click.option("--revision",
-              type=str,
-              default=None,
-              help="The revision to use for the HuggingFace model "
-              "(branch name, tag name, or commit id).")
+          type=str,
+          default=None,
+          help="The revision to use for the HuggingFace model "
+          "(branch name, tag name, or commit id).")
 @click.option("--config",
-              "--extra_llm_api_options",
-              "extra_llm_api_options",
-              type=str,
-              default=None,
-              help="Path to a YAML file that overwrites the parameters. "
-              "Can be specified as either --config or --extra_llm_api_options.")
+          "--extra_llm_api_options",
+          "extra_llm_api_options",
+          type=str,
+          default=None,
+          help="Path to a YAML file that overwrites the parameters. "
+          "Can be specified as either --config or --extra_llm_api_options.")
 @click.option("--disable_kv_cache_reuse",
-              is_flag=True,
-              default=False,
-              help="Flag for disabling KV cache reuse.")
+          is_flag=True,
+          default=False,
+          help="Flag for disabling KV cache reuse.")
 @click.pass_context
 def main(ctx, model: str, tokenizer: Optional[str],
          custom_tokenizer: Optional[str], log_level: str, backend: str,
