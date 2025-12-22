@@ -522,6 +522,13 @@ class OpenAIServer:
             return chat_response
 
         try:
+            body = await raw_request.json()
+            for msg in body.get("messages", []) or []:
+                tc = msg.get("tool_calls")
+                if isinstance(tc, list):
+                    for t in tc:
+                        if isinstance(t, dict):
+                            t.pop("index", None)
             conversation: List[ConversationMessage] = []
             tool_dicts = None if request.tools is None else [
                 tool.model_dump() for tool in request.tools
