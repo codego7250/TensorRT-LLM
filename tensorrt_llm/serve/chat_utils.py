@@ -193,14 +193,16 @@ def parse_chat_message_content(
         result.update(_parse_tool_message_content(message))
     return result
 
-
 # Adapted from: https://github.com/vllm-project/vllm/blob/4574d48bab9c4e38b7c0a830eeefc8f0980e8c58/vllm/entrypoints/chat_utils.py#L1406
 def _parse_assistant_message_content(message: Dict[str, Any]) -> Dict[str, Any]:
     result = {}
     tool_calls = message.get("tool_calls")
+
     if tool_calls is not None:
         result["tool_calls"] = []
         for item in tool_calls:
+            if isinstance(item, dict):
+                item.pop("index", None)
             if content := item["function"].get("arguments"):
                 if isinstance(content, str):
                     item["function"]["arguments"] = json.loads(content)
