@@ -2053,7 +2053,7 @@ class TorchSampler(Sampler, AsyncWorkerMixin):
                 logits_cuda[logprobs_logit_indices_cuda].to(dtype=torch.float32, non_blocking=True),
                 dim=-1,
             )
-            k=max(req.py_num_logprobs for req in requests)
+            k=max((req.py_num_logprobs or 0) for req in requests)
             if k<= 0:
                 return
             topk_vals_cuda, topk_indices_cuda = torch.topk(

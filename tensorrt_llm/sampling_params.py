@@ -479,6 +479,9 @@ class SamplingParams:
             llmapi_to_rt_param_map["num_return_sequences"] = self.best_of
             llmapi_to_rt_param_map["beam_width"] = 1
 
+        top_p = llmapi_to_rt_param_map.get("topP", None)  # key name may differ in your map
+        if top_p is not None and top_p <= 0.0:
+            llmapi_to_rt_param_map["topP"] = 1.0
         return tllme.SamplingConfig(**llmapi_to_rt_param_map)
 
     def _get_output_config(self, is_pytorch_backend: bool = False) -> tllme.OutputConfig:
