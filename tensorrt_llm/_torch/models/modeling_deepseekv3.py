@@ -410,11 +410,16 @@ class DeepseekV3WeightLoader:
                     continue
                 else:
                     module_weights = filter_weights(name, weights)
+                    if not module_weights:  # covers None / {} / empty Mapping
+                        continue
                     if hasattr(module, 'load_weights'):
-                        module.load_weights(weights=[module_weights])
+                            module.load_weights(weights=[module_weights])
                     else:
                         for n, p in module.named_parameters():
-                            p.data.copy_(module_weights[n][:])
+                            w = module_weights.get(n, None)
+                            if w is None:
+                                continue
+                            p.data.copy_(w[:])
 
 
 class DeepseekV3MTPHead(nn.Module):

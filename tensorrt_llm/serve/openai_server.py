@@ -769,7 +769,10 @@ class OpenAIServer:
             await asyncio.gather(*tasks)
 
         async def generator_wrapper(generator: AsyncIterator[Any]):
-            first_response = await anext(generator)
+            try:
+                first_response = await anext(generator)
+            except StopAsyncIteration:
+                return
             raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds()
             yield first_response
             async for output in generator:
