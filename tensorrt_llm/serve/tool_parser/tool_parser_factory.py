@@ -3,10 +3,7 @@ from typing import Type
 from .base_tool_parser import BaseToolParser
 from .deepseekv3_parser import DeepSeekV3Parser
 from .deepseekv31_parser import DeepSeekV31Parser
-<<<<<<< HEAD
 from .deepseekv32_parser import DeepSeekV32Parser
-=======
->>>>>>> f521a466f (tool call)
 from .kimi_k2_tool_parser import KimiK2ToolParser
 from .qwen3_coder_parser import Qwen3CoderToolParser
 from .qwen3_tool_parser import Qwen3ToolParser

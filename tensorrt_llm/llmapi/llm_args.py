@@ -307,7 +307,6 @@ class DeepSeekSparseAttentionConfig(BaseSparseAttentionConfig):
         self.seq_len_threshold = self.index_topk
         return self.skip_indexer_for_short_seqs
 
-<<<<<<< HEAD
 
 class SkipSoftmaxAttentionConfig(BaseSparseAttentionConfig):
     """
@@ -337,8 +336,6 @@ class SkipSoftmaxAttentionConfig(BaseSparseAttentionConfig):
             return self.threshold_scale_factor.get('decode', None)
         return self.threshold_scale_factor
 
-=======
->>>>>>> d392dd652 ([TRTLLM-9416][feat] Skip DS-v3.2 indexer MQA and Top-K for short sequences. (#9524))
 
 class MoeLoadBalancerConfig(StrictBaseModel):
     """

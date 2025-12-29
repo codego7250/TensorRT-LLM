@@ -1,9 +1,5 @@
 import copy
 import dataclasses
-<<<<<<< HEAD
-=======
-import os
->>>>>>> e49c70f6d ([None][feat] Support Mistral Large3 LLM part (#9820))
 from typing import Any, Dict, List, Tuple
 
 import torch
