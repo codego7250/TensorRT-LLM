@@ -615,6 +615,7 @@ exclude = [
     "tensorrt_llm/llmapi/tracer.py",
     "tensorrt_llm/llmapi/tracing.py",
     "tensorrt_llm/llmapi/utils.py",
+    "tensorrt_llm/tokenizer/tokenizer.py",
     "tensorrt_llm/lora_helper.py",
     "tensorrt_llm/mapping.py",
     "tensorrt_llm/math_utils.py",
