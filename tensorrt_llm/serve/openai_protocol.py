@@ -301,13 +301,6 @@ class CompletionRequest(OpenAIBaseModel):
 
     # doc: end-completion-extra-params
     # doc: end-chat-completion-extra-params
-    @field_validator('reasoning_effort', mode='before')
-    @classmethod
-    def convert_reasoning_effort(cls, v):
-        """Convert boolean reasoning_effort to string value."""
-        if isinstance(v, bool):
-            return 'medium' if v else None
-        return v
 
     def to_sampling_params(self, vocab_size: int = 32000) -> SamplingParams:
         sampling_params = SamplingParams(
@@ -654,6 +647,13 @@ class ChatCompletionRequest(OpenAIBaseModel):
          ))
 
     # doc: end-chat-completion-extra-params
+    @field_validator('reasoning_effort', mode='before')
+    @classmethod
+    def convert_reasoning_effort(cls, v):
+        """Convert boolean reasoning_effort to string value."""
+        if isinstance(v, bool):
+            return 'medium' if v else None
+        return v
 
     def to_sampling_params(self,
                            vocab_size: int = 32000,
