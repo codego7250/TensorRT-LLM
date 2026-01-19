@@ -187,6 +187,10 @@ class LogProbStorage:
     beam_width: int = -1
     log_probs: list[TokenLogprobs]
     cum_log_probs: list[float]
+    def __init__(self):
+        self.beam_width = -1
+        self.log_probs = []
+        self.cum_log_probs = []
 
     def _init(self, first_input: list[TokenLogprobs]):
         self.beam_width = len(first_input)

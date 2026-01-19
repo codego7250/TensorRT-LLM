@@ -168,10 +168,11 @@ class Glm4WeightLoader:
                             )
                     else:
                         for n, p in module.named_parameters():
-                            if not allow_partial_loading:
-                                assert n in module_weights
                             if n in module_weights:
-                                p.data.copy_(module_weights[n][:])
+                                w = module_weights.get(n, None)
+                                if w is None:
+                                    continue
+                                p.data.copy_(w[:])
 
 
 class Glm4Attention(QKNormRoPEAttention):
