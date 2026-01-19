@@ -1752,6 +1752,8 @@ class TorchSampler(Sampler, AsyncWorkerMixin):
         state: SampleStateTorch,
         resource_manager: Optional[ResourceManager] = None,
     ) -> None:
+        if state is None:
+            return
         assert isinstance(state, SampleStateTorch)
         if state.sampler_event:
             state.sampler_event.synchronize()
@@ -2050,8 +2052,11 @@ class TorchSampler(Sampler, AsyncWorkerMixin):
                 logits_cuda[logprobs_logit_indices_cuda].to(dtype=torch.float32, non_blocking=True),
                 dim=-1,
             )
+            k=max((req.py_num_logprobs or 0) for req in requests)
+            if k<= 0:
+                return
             topk_vals_cuda, topk_indices_cuda = torch.topk(
-                logprobs_cuda, k=max(req.py_num_logprobs for req in requests), dim=-1
+                logprobs_cuda, k=k, dim=-1
             )
             # Use a single D2H copy to reduce overheads
             topk_vals = self._copy_to_host(topk_vals_cuda)

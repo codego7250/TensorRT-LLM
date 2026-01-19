@@ -857,6 +857,8 @@ async def _create_input_tokens_harmony(
 
     return _render_for_completion(messages)
 
+def int_or_bool_to_none(x):
+    return None if type(x) in (int, bool) else x
 
 async def request_preprocess(
     request: ResponsesRequest,
@@ -876,6 +878,7 @@ async def request_preprocess(
         })
 
     prev_response_id = request.previous_response_id
+    request.reasoning_effort = int_or_bool_to_none(request.reasoning_effort)
 
     # TODO: better way to enable metrics
     if len(os.getenv("TRTLLM_KVCACHE_TIME_OUTPUT_PATH", "")) > 0:
@@ -987,6 +990,7 @@ def _create_output_content(
     reasoning_parser: Optional[str] = None,
     tool_parser: Optional[str] = None,
     tools: Optional[list[Tool]] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> Tuple[list[ResponseOutputItem], list[ChatCompletionMessageParam]]:
     output_items: list[ResponseOutputItem] = []
     output_messages: list[ChatCompletionMessageParam] = []
@@ -994,10 +998,13 @@ def _create_output_content(
 
     for output in final_res.outputs:
         calls = []
-        text, reasoning_text = _apply_reasoning_parser(reasoning_parser,
-                                                       output.index,
-                                                       output.text, False)
-
+        # Only parse reasoning when reasoning_effort is requested.
+        text = output.text
+        reasoning_text = ""
+        if reasoning_effort is not None:
+            text, reasoning_text = _apply_reasoning_parser(reasoning_parser,
+                                                           output.index,
+                                                           output.text, False)
         if text:
             text, calls = _apply_tool_parser(tool_parser, available_tools,
                                              output.index, text, False)
@@ -1100,7 +1107,12 @@ def _create_response(
             final_res)
     else:
         output_content, output_messages = _create_output_content(
-            final_res, reasoning_parser, tool_parser, request.tools)
+            final_res,
+            reasoning_parser,
+            tool_parser,
+            request.tools,
+            reasoning_effort=request.reasoning_effort,
+        )
 
     response = ResponsesResponse.from_request(
         request=request,
@@ -1412,6 +1424,7 @@ def _should_send_done_events(
     tool_parser_dict: Optional[dict[int, BaseToolParser]] = None,
     streaming_events_helper: Optional[ResponsesStreamingEventsHelper] = None,
     finished_generation: bool = False,
+    reasoning_effort: Optional[str] = None,
 ) -> Tuple[bool, bool, Optional[str], Optional[str]]:
     """
     Determine if done events should be sent for text or reasoning items.
@@ -1440,13 +1453,16 @@ def _should_send_done_events(
 
     # TODO(JunyiXu-nv): find a more efficient way to decide if we need to send done events
     # Parse complete output using non-streaming mode to get full content
-    full_text, full_reasoning = _apply_reasoning_parser(
-        reasoning_parser_id=reasoning_parser_id,
-        output_index=output_index,
-        text=output.text,
-        streaming=False,
-        reasoning_parser_dict=reasoning_parser_dict,
-    )
+    if reasoning_effort is not None:
+        full_text, full_reasoning = _apply_reasoning_parser(
+            reasoning_parser_id=reasoning_parser_id,
+            output_index=output_index,
+            text=output.text,
+            streaming=False,
+            reasoning_parser_dict=reasoning_parser_dict,
+        )
+    else:
+        full_text, full_reasoning = output.text, ""
 
     # Apply tool parsing to get tool calls
     tool_calls = []
@@ -1513,16 +1529,19 @@ def _generate_streaming_event(
                     f"Parser({parser_id}) dictionary is not provided for streaming"
                 )
 
-    check_parser(reasoning_parser_id, reasoning_parser_dict)
     check_parser(tool_parser_id, tool_parser_dict)
 
-    delta_text, reasoning_delta_text = _apply_reasoning_parser(
-        reasoning_parser_id=reasoning_parser_id,
-        output_index=output_idx,
-        text=delta_text,
-        streaming=True,
-        reasoning_parser_dict=reasoning_parser_dict,
-    )
+    # Only parse reasoning when reasoning_effort is requested.
+    reasoning_delta_text = ""
+    if request.reasoning_effort is not None:
+        check_parser(reasoning_parser_id, reasoning_parser_dict)
+        delta_text, reasoning_delta_text = _apply_reasoning_parser(
+            reasoning_parser_id=reasoning_parser_id,
+            output_index=output_idx,
+            text=delta_text,
+            streaming=True,
+            reasoning_parser_dict=reasoning_parser_dict,
+        )
 
     if delta_text:
         # TODO(JunyiXu-nv): handle tool calls in streaming mode
@@ -1551,6 +1570,7 @@ def _generate_streaming_event(
         tool_parser_dict=tool_parser_dict,
         streaming_events_helper=streaming_events_helper,
         finished_generation=finished_generation,
+        reasoning_effort=request.reasoning_effort,
     )
 
     # Send done events if needed

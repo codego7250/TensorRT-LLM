@@ -499,8 +499,9 @@ class OpenAIServer:
                 first_response = await anext(promise)
                 raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds()
                 pp_results = first_response.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(first_response, args)
-                for pp_res in pp_results:
-                    yield pp_res
+                if pp_results is not None:
+                    for pp_res in pp_results:
+                        yield pp_res
                 # Making sure we can handling the situation where there is only one response
                 res = first_response
                 async for res in promise:
@@ -531,6 +532,13 @@ class OpenAIServer:
             return chat_response
 
         try:
+            body = await raw_request.json()
+            for msg in body.get("messages", []) or []:
+                tc = msg.get("tool_calls")
+                if isinstance(tc, list):
+                    for t in tc:
+                        if isinstance(t, dict):
+                            t.pop("index", None)
             conversation: List[ConversationMessage] = []
             tool_dicts = None if request.tools is None else [
                 tool.model_dump() for tool in request.tools
@@ -607,6 +615,10 @@ class OpenAIServer:
             else:
                 response = await create_chat_response(promise, postproc_params, disaggregated_params)
                 return JSONResponse(content=response.model_dump())
+        except asyncio.CancelledError:
+            if promise is not None:
+                promise.abort()
+            return self.create_error_response("cancelled")
         except CppExecutorError:
             logger.error(traceback.format_exc())
             # If internal executor error is raised, shutdown the server
@@ -684,6 +696,10 @@ class OpenAIServer:
             response = await create_mm_embedding_response(promise)
             return JSONResponse(content=response.model_dump())
 
+        except asyncio.CancelledError:
+            if promise is not None:
+                promise.abort()
+            return self.create_error_response("cancelled")
         except CppExecutorError:
             logger.error(traceback.format_exc())
             # If internal executor error is raised, shutdown the server
@@ -747,8 +763,9 @@ class OpenAIServer:
                         pp_result = post_processor(output, args)
                     else:
                         pp_result = output.outputs[0]._postprocess_result
-                    for pp_res in pp_result:
-                        yield pp_res
+                    if pp_result is not None:
+                        for pp_res in pp_result:
+                            yield pp_res
                 await self._extract_metrics(output, raw_request)
             except:
                 logger.error(traceback.format_exc())
@@ -774,7 +791,10 @@ class OpenAIServer:
             await asyncio.gather(*tasks)
 
         async def generator_wrapper(generator: AsyncIterator[Any]):
-            first_response = await anext(generator)
+            try:
+                first_response = await anext(generator)
+            except StopAsyncIteration:
+                return
             raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds()
             yield first_response
             async for output in generator:
@@ -844,6 +864,11 @@ class OpenAIServer:
                                               for promise, params in zip(promises, postproc_params_collection)])
                 response = merge_completion_responses(rsps) if len(rsps) > 1 else rsps[0]
                 return JSONResponse(content=response.model_dump())
+
+        except asyncio.CancelledError:
+            if promise is not None:
+                promise.abort()
+            return self.create_error_response("cancelled")
         except CppExecutorError:
             logger.error(traceback.format_exc())
             # If internal executor error is raised, shutdown the server
