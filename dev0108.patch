@@ -1,0 +1,561 @@
+diff --git a/build.sh b/build.sh
+deleted file mode 100644
+index c05f47772..000000000
+--- a/build.sh
++++ /dev/null
+@@ -1 +0,0 @@
+-python3 ./scripts/build_wheel.py --trt_root /usr/local/tensorrt --benchmarks --cuda_architectures "100-real" --dist_dir ./dist-dir --build_type Release  --use_ccache #--clean 
+diff --git a/pyproject.toml b/pyproject.toml
+index c832aa47d..031d41850 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -615,7 +615,6 @@ exclude = [
+     "tensorrt_llm/llmapi/tracer.py",
+     "tensorrt_llm/llmapi/tracing.py",
+     "tensorrt_llm/llmapi/utils.py",
+-    "tensorrt_llm/tokenizer/tokenizer.py",
+     "tensorrt_llm/lora_helper.py",
+     "tensorrt_llm/mapping.py",
+     "tensorrt_llm/math_utils.py",
+diff --git a/tensorrt_llm/_torch/models/modeling_deepseekv3.py b/tensorrt_llm/_torch/models/modeling_deepseekv3.py
+index c02aaacc9..f475280f8 100755
+--- a/tensorrt_llm/_torch/models/modeling_deepseekv3.py
++++ b/tensorrt_llm/_torch/models/modeling_deepseekv3.py
+@@ -552,16 +552,11 @@ class DeepseekV3WeightLoader:
+                     continue
+                 else:
+                     module_weights = filter_weights(name, weights)
+-                    if not module_weights:  # covers None / {} / empty Mapping
+-                        continue
+                     if hasattr(module, 'load_weights'):
+-                            module.load_weights(weights=[module_weights])
++                        module.load_weights(weights=[module_weights])
+                     else:
+                         for n, p in module.named_parameters():
+-                            w = module_weights.get(n, None)
+-                            if w is None:
+-                                continue
+-                            p.data.copy_(w[:])
++                            p.data.copy_(module_weights[n][:])
+ 
+ 
+ class DeepseekV3MTPHead(nn.Module):
+diff --git a/tensorrt_llm/_torch/models/modeling_glm.py b/tensorrt_llm/_torch/models/modeling_glm.py
+index da865c771..94ae57cef 100644
+--- a/tensorrt_llm/_torch/models/modeling_glm.py
++++ b/tensorrt_llm/_torch/models/modeling_glm.py
+@@ -168,11 +168,11 @@ class Glm4WeightLoader:
+                             )
+                     else:
+                         for n, p in module.named_parameters():
++                            if not allow_partial_loading:
++                                assert n in module_weights
+                             if n in module_weights:
+-                                w = module_weights.get(n, None)
+-                                if w is None:
+-                                    continue
+-                                p.data.copy_(w[:])
++                                p.data.copy_(module_weights[n][:])
++
+ 
+ class Glm4Attention(QKNormRoPEAttention):
+     def __init__(
+diff --git a/tensorrt_llm/_torch/pyexecutor/llm_request.py b/tensorrt_llm/_torch/pyexecutor/llm_request.py
+index c29957cc3..871fe4b9b 100644
+--- a/tensorrt_llm/_torch/pyexecutor/llm_request.py
++++ b/tensorrt_llm/_torch/pyexecutor/llm_request.py
+@@ -187,11 +187,6 @@ class LogProbStorage:
+     log_probs: list[TokenLogprobs]
+     cum_log_probs: list[float]
+ 
+-    def __init__(self):
+-        self.beam_width = -1
+-        self.log_probs = []
+-        self.cum_log_probs = []
+-
+     def _init(self, first_input: list[TokenLogprobs]):
+         self.beam_width = len(first_input)
+         self.log_probs = [[] for _ in range(self.beam_width)]
+diff --git a/tensorrt_llm/_torch/pyexecutor/sampler.py b/tensorrt_llm/_torch/pyexecutor/sampler.py
+index a4b5e8c5c..3475963bb 100644
+--- a/tensorrt_llm/_torch/pyexecutor/sampler.py
++++ b/tensorrt_llm/_torch/pyexecutor/sampler.py
+@@ -1752,8 +1752,6 @@ class TorchSampler(Sampler, AsyncWorkerMixin):
+         state: SampleStateTorch,
+         resource_manager: Optional[ResourceManager] = None,
+     ) -> None:
+-        if state is None:
+-            return
+         assert isinstance(state, SampleStateTorch)
+         if state.sampler_event:
+             state.sampler_event.synchronize()
+@@ -2052,11 +2050,8 @@ class TorchSampler(Sampler, AsyncWorkerMixin):
+                 logits_cuda[logprobs_logit_indices_cuda].to(dtype=torch.float32, non_blocking=True),
+                 dim=-1,
+             )
+-            k=max((req.py_num_logprobs or 0) for req in requests)
+-            if k<= 0:
+-                return
+             topk_vals_cuda, topk_indices_cuda = torch.topk(
+-                logprobs_cuda, k=k, dim=-1
++                logprobs_cuda, k=max(req.py_num_logprobs for req in requests), dim=-1
+             )
+             # Use a single D2H copy to reduce overheads
+             topk_vals = self._copy_to_host(topk_vals_cuda)
+diff --git a/tensorrt_llm/executor/result.py b/tensorrt_llm/executor/result.py
+index 002518824..8d33d94a7 100644
+--- a/tensorrt_llm/executor/result.py
++++ b/tensorrt_llm/executor/result.py
+@@ -260,10 +260,7 @@ class GenerationResultBase:
+             output.token_ids.extend(response_tensors.output_token_ids[src_idx])
+ 
+         if response_tensors.cum_log_probs is not None:
+-            if src_idx < len(response_tensors.cum_log_probs):
+-                output.cumulative_logprob = response_tensors.cum_log_probs[src_idx]
+-            else:
+-                output.cumulative_logprob = float('-inf')
++            output.cumulative_logprob = response_tensors.cum_log_probs[src_idx]
+ 
+         # prompt logprobs handling
+         if logprobs_result and logprobs_result.prompt is not None:  # both backends
+@@ -281,12 +278,14 @@ class GenerationResultBase:
+             # contains a streamwise monotonically growing list of logprobs.
+             # so we need to accumulate only the new ones unique to that particular streamed response
+             if self.use_trtllm_sampler:
+-                if (src_idx < len(response_tensors.log_probs)):
+-                    output.logprobs += response_tensors.log_probs[src_idx][
+-                        output._last_logprobs_len:]
++                assert output._last_logprobs_len <= len(
++                    response_tensors.log_probs[src_idx]
++                ), (f"_last_logprobs_len ({output._last_logprobs_len}) > log_probs length ("
++                    f"{len(response_tensors.log_probs[src_idx])})")
++                output.logprobs += response_tensors.log_probs[src_idx][
++                    output._last_logprobs_len:]
+             else:
+-                if (src_idx < len(response_tensors.log_probs)):
+-                    output.logprobs += response_tensors.log_probs[src_idx]
++                output.logprobs += response_tensors.log_probs[src_idx]
+ 
+             # overcome some WAR in the cpp executor
+             if finish_reasons[
+@@ -812,10 +811,8 @@ class GenerationResult(GenerationResultBase):
+     async def __anext__(self):
+         if self._done:
+             raise StopAsyncIteration
+-        try:
+-            await self._aresult_step()
+-        except asyncio.CancelledError:
+-            self._done = True
++
++        await self._aresult_step()
+         return self
+ 
+     def _exception(self, timeout: Optional[float] = None):
+diff --git a/tensorrt_llm/sampling_params.py b/tensorrt_llm/sampling_params.py
+index bcb740089..40bb204b5 100644
+--- a/tensorrt_llm/sampling_params.py
++++ b/tensorrt_llm/sampling_params.py
+@@ -298,17 +298,33 @@ class SamplingParams:
+         Executor class of C++ runtime, the LLM API disallows such combination.
+         """
+         if self.top_p is not None and (self.top_p < 0 or self.top_p > 1):
+-            self.top_p = 0.1
++            raise ValueError(f"require 0 <= top_p <= 1, got top_p={self.top_p}")
+         if self.top_k is not None and self.top_k < 0:
+-            self.top_k = 1
++            raise ValueError(f"require top_k >= 0, got top_k={self.top_k}")
+         if self.temperature is not None and self.temperature < 0:
+-            self.temperature = 0
++            raise ValueError(f"require temperature >= 0, got temperature={self.temperature}")
+ 
+         if self.best_of is not None and self.best_of < self.n:
+-            self.best_of = self.n
++            raise ValueError(f"best_of ({self.best_of}) cannot be less than n ({self.n})")
++
++        if (
++            self.best_of is not None
++            and self.best_of > 1
++            and self._greedy_decoding
++            and not os.environ.get("TLLM_ALLOW_N_GREEDY_DECODING", None)
++        ):
++            raise ValueError(
++                f"Greedy decoding in the LLM API does not allow multiple "
++                f"returns. Please set to best_of=1, got best_of={self.best_of}. "
++                f"Please set to best_of=1 or set an environment variable "
++                f"TLLM_ALLOW_N_GREEDY_DECODING=1 to allow best_of > 1 "
++                f"under the greedy decoding."
++            )
+ 
+         if self.truncate_prompt_tokens is not None and self.truncate_prompt_tokens < 1:
+-            self.truncate_prompt_tokens = 1
++            raise ValueError(
++                f"truncate_prompt_tokens must be >= 1, got {self.truncate_prompt_tokens}"
++            )
+ 
+         if self.guided_decoding is not None:
+             self.guided_decoding._validate()
+@@ -465,9 +481,6 @@ class SamplingParams:
+             llmapi_to_rt_param_map["num_return_sequences"] = self.best_of
+             llmapi_to_rt_param_map["beam_width"] = 1
+ 
+-        top_p = llmapi_to_rt_param_map.get("topP", None)  # key name may differ in your map
+-        if top_p is not None and top_p <= 0.0:
+-            llmapi_to_rt_param_map["topP"] = 1.0
+         return tllme.SamplingConfig(**llmapi_to_rt_param_map)
+ 
+     def _get_output_config(self, is_pytorch_backend: bool = False) -> tllme.OutputConfig:
+diff --git a/tensorrt_llm/serve/chat_utils.py b/tensorrt_llm/serve/chat_utils.py
+index 2b1edee67..26ee17c4f 100644
+--- a/tensorrt_llm/serve/chat_utils.py
++++ b/tensorrt_llm/serve/chat_utils.py
+@@ -201,8 +201,6 @@ def _parse_assistant_message_content(message: Dict[str, Any]) -> Dict[str, Any]:
+     if tool_calls is not None:
+         result["tool_calls"] = []
+         for item in tool_calls:
+-            if isinstance(item, dict):
+-                item.pop("index", None)
+             if content := item["function"].get("arguments"):
+                 if isinstance(content, str):
+                     item["function"]["arguments"] = json.loads(content)
+diff --git a/tensorrt_llm/serve/openai_protocol.py b/tensorrt_llm/serve/openai_protocol.py
+index 53adaecf6..8ddda27cd 100644
+--- a/tensorrt_llm/serve/openai_protocol.py
++++ b/tensorrt_llm/serve/openai_protocol.py
+@@ -4,7 +4,6 @@ import base64
+ import time
+ import uuid
+ from typing import Any, Dict, List, Literal, Optional, Union
+-from pydantic import BaseModel, Field, field_validator, model_validator
+ 
+ import torch
+ import xgrammar
+@@ -300,7 +299,6 @@ class CompletionRequest(OpenAIBaseModel):
+     )
+ 
+     # doc: end-completion-extra-params
+-    # doc: end-chat-completion-extra-params
+ 
+     def to_sampling_params(self, vocab_size: int = 32000) -> SamplingParams:
+         sampling_params = SamplingParams(
+@@ -561,7 +559,13 @@ class ChatCompletionRequest(OpenAIBaseModel):
+                                 ChatCompletionNamedToolChoiceParam]] = "none"
+     user: Optional[str] = None
+     reasoning_effort: Optional[ReasoningEffort | Literal[
+-        "low", "medium", "high"]] = None 
++        "low", "medium", "high"]] = Field(
++            default=ReasoningEffort.LOW,
++            description=(
++                "The level of reasoning effort to use. Controls how much "
++                "reasoning is shown in the model's response. Options: "
++                "'low', 'medium', 'high'."),
++        )
+     prompt_ignore_length: Optional[int] = 0
+ 
+     # doc: begin-chat-completion-sampling-params
+@@ -641,25 +645,6 @@ class ChatCompletionRequest(OpenAIBaseModel):
+          ))
+ 
+     # doc: end-chat-completion-extra-params
+-    @field_validator('reasoning_effort', mode='before')
+-    @classmethod
+-    def convert_reasoning_effort(cls, v):
+-        if v is None:
+-            return v
+-        if isinstance(v, bool):
+-            return 'medium' if v else None
+-        return v
+-
+-    @model_validator(mode="after")
+-    def apply_reasoning_effort(self):
+-        # normalize reasoning_effort if it can be a bool
+-        # if reasoning_effort is set, ensure chat_template_kwargs exists and add thinking=true
+-        if self.reasoning_effort is not None:
+-            if self.chat_template_kwargs is None:
+-                self.chat_template_kwargs = {}
+-            self.chat_template_kwargs["thinking"] = True
+-
+-        return self
+ 
+     def to_sampling_params(self,
+                            vocab_size: int = 32000,
+diff --git a/tensorrt_llm/serve/openai_server.py b/tensorrt_llm/serve/openai_server.py
+index 4dabafdc8..99f19db0f 100644
+--- a/tensorrt_llm/serve/openai_server.py
++++ b/tensorrt_llm/serve/openai_server.py
+@@ -492,9 +492,8 @@ class OpenAIServer:
+                 first_response = await anext(promise)
+                 raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds()
+                 pp_results = first_response.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(first_response, args)
+-                if pp_results is not None:
+-                    for pp_res in pp_results:
+-                        yield pp_res
++                for pp_res in pp_results:
++                    yield pp_res
+                 # Making sure we can handling the situation where there is only one response
+                 res = first_response
+                 async for res in promise:
+@@ -525,14 +524,6 @@ class OpenAIServer:
+             return chat_response
+ 
+         try:
+-            body = await raw_request.json()
+-            for msg in body.get("messages", []) or []:
+-                tc = msg.get("tool_calls")
+-                if isinstance(tc, list):
+-                    for t in tc:
+-                        if isinstance(t, dict):
+-                            t.pop("index", None)
+-
+             conversation: List[ConversationMessage] = []
+             tool_dicts = None if request.tools is None else [
+                 tool.model_dump() for tool in request.tools
+@@ -605,10 +596,6 @@ class OpenAIServer:
+             else:
+                 response = await create_chat_response(promise, postproc_params, disaggregated_params)
+                 return JSONResponse(content=response.model_dump())
+-        except asyncio.CancelledError:
+-            if promise is not None:
+-                promise.abort()
+-            return self.create_error_response("cancelled")
+         except CppExecutorError:
+             logger.error(traceback.format_exc())
+             # If internal executor error is raised, shutdown the server
+@@ -684,10 +671,6 @@ class OpenAIServer:
+             response = await create_mm_embedding_response(promise)
+             return JSONResponse(content=response.model_dump())
+ 
+-        except asyncio.CancelledError:
+-            if promise is not None:
+-                promise.abort()
+-            return self.create_error_response("cancelled")
+         except CppExecutorError:
+             logger.error(traceback.format_exc())
+             # If internal executor error is raised, shutdown the server
+@@ -751,9 +734,8 @@ class OpenAIServer:
+                         pp_result = post_processor(output, args)
+                     else:
+                         pp_result = output.outputs[0]._postprocess_result
+-                    if pp_result is not None:
+-                        for pp_res in pp_result:
+-                            yield pp_res
++                    for pp_res in pp_result:
++                        yield pp_res
+                 await self._extract_metrics(output, raw_request)
+             except:
+                 logger.error(traceback.format_exc())
+@@ -779,10 +761,7 @@ class OpenAIServer:
+             await asyncio.gather(*tasks)
+ 
+         async def generator_wrapper(generator: AsyncIterator[Any]):
+-            try:
+-                first_response = await anext(generator)
+-            except StopAsyncIteration:
+-                return
++            first_response = await anext(generator)
+             raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds()
+             yield first_response
+             async for output in generator:
+@@ -852,10 +831,6 @@ class OpenAIServer:
+                                               for promise, params in zip(promises, postproc_params_collection)])
+                 response = merge_completion_responses(rsps) if len(rsps) > 1 else rsps[0]
+                 return JSONResponse(content=response.model_dump())
+-        except asyncio.CancelledError:
+-            if promise is not None:
+-                promise.abort()
+-            return self.create_error_response("cancelled")
+         except CppExecutorError:
+             logger.error(traceback.format_exc())
+             # If internal executor error is raised, shutdown the server
+@@ -1080,10 +1055,6 @@ class OpenAIServer:
+             else:
+                 response = await create_response(promise, postproc_params)
+                 return JSONResponse(content=response.model_dump())
+-        except asyncio.CancelledError:
+-            if promise is not None:
+-                promise.abort()
+-            return self.create_error_response("cancelled")
+         except CppExecutorError:
+             logger.error(traceback.format_exc())
+             # If internal executor error is raised, shutdown the server
+diff --git a/tensorrt_llm/serve/postprocess_handlers.py b/tensorrt_llm/serve/postprocess_handlers.py
+index c1a5c93db..01ffb648e 100644
+--- a/tensorrt_llm/serve/postprocess_handlers.py
++++ b/tensorrt_llm/serve/postprocess_handlers.py
+@@ -46,7 +46,6 @@ class ChatPostprocArgs(PostprocArgs):
+     echo: bool = False
+     role: str
+     model: str
+-    reasoning_effort: Optional[Any] = None
+     num_choices: int = 1
+     tools: Optional[List[ChatCompletionToolsParam]] = None
+     tool_choice: Optional[Union[Literal["none"],
+@@ -71,7 +70,6 @@ class ChatPostprocArgs(PostprocArgs):
+             role="assistant"
+             if request.add_generation_prompt else request.messages[-1]["role"],
+             model=request.model,
+-            reasoning_effort=request.reasoning_effort,
+             num_choices=request.n if request.n else 1,
+             tools=request.tools,
+             tool_choice=request.tool_choice,
+@@ -115,10 +113,6 @@ def create_logprobs(token_ids: List[int], tokenizer: TransformersTokenizer,
+ 
+ def apply_reasoning_parser(args: ChatPostprocArgs, output_index: int, text: str,
+                            streaming: bool) -> Tuple[str, str]:
+-    # Only apply reasoning parser when reasoning_effort is requested.
+-    if args.reasoning_effort is None:
+-        return text, ""
+-
+     reasoning_parser = None
+     if args.reasoning_parser is not None:
+         if output_index not in args.reasoning_parser_dict:
+diff --git a/tensorrt_llm/serve/responses_utils.py b/tensorrt_llm/serve/responses_utils.py
+index 27e30a8e9..14ec92a81 100644
+--- a/tensorrt_llm/serve/responses_utils.py
++++ b/tensorrt_llm/serve/responses_utils.py
+@@ -838,8 +838,6 @@ async def _create_input_tokens_harmony(
+ 
+     return _render_for_completion(messages)
+ 
+-def int_or_bool_to_none(x):
+-    return None if type(x) in (int, bool) else x
+ 
+ async def request_preprocess(
+     request: ResponsesRequest,
+@@ -859,7 +857,6 @@ async def request_preprocess(
+         })
+ 
+     prev_response_id = request.previous_response_id
+-    request.reasoning_effort = int_or_bool_to_none(request.reasoning_effort)
+ 
+     # TODO: better way to enable metrics
+     if len(os.getenv("TRTLLM_KVCACHE_TIME_OUTPUT_PATH", "")) > 0:
+@@ -971,7 +968,6 @@ def _create_output_content(
+     reasoning_parser: Optional[str] = None,
+     tool_parser: Optional[str] = None,
+     tools: Optional[list[Tool]] = None,
+-    reasoning_effort: Optional[str] = None,
+ ) -> Tuple[list[ResponseOutputItem], list[ChatCompletionMessageParam]]:
+     output_items: list[ResponseOutputItem] = []
+     output_messages: list[ChatCompletionMessageParam] = []
+@@ -979,13 +975,9 @@ def _create_output_content(
+ 
+     for output in final_res.outputs:
+         calls = []
+-        # Only parse reasoning when reasoning_effort is requested.
+-        text = output.text
+-        reasoning_text = ""
+-        if reasoning_effort is not None:
+-            text, reasoning_text = _apply_reasoning_parser(reasoning_parser,
+-                                                           output.index,
+-                                                           output.text, False)
++        text, reasoning_text = _apply_reasoning_parser(reasoning_parser,
++                                                       output.index,
++                                                       output.text, False)
+ 
+         if text:
+             text, calls = _apply_tool_parser(tool_parser, available_tools,
+@@ -1089,12 +1081,7 @@ def _create_response(
+             final_res)
+     else:
+         output_content, output_messages = _create_output_content(
+-            final_res,
+-            reasoning_parser,
+-            tool_parser,
+-            request.tools,
+-            reasoning_effort=request.reasoning_effort,
+-        )
++            final_res, reasoning_parser, tool_parser, request.tools)
+ 
+     response = ResponsesResponse.from_request(
+         request=request,
+@@ -1406,7 +1393,6 @@ def _should_send_done_events(
+     tool_parser_dict: Optional[dict[int, BaseToolParser]] = None,
+     streaming_events_helper: Optional[ResponsesStreamingEventsHelper] = None,
+     finished_generation: bool = False,
+-    reasoning_effort: Optional[str] = None,
+ ) -> Tuple[bool, bool, Optional[str], Optional[str]]:
+     """
+     Determine if done events should be sent for text or reasoning items.
+@@ -1435,16 +1421,13 @@ def _should_send_done_events(
+ 
+     # TODO(JunyiXu-nv): find a more efficient way to decide if we need to send done events
+     # Parse complete output using non-streaming mode to get full content
+-    if reasoning_effort is not None:
+-        full_text, full_reasoning = _apply_reasoning_parser(
+-            reasoning_parser_id=reasoning_parser_id,
+-            output_index=output_index,
+-            text=output.text,
+-            streaming=False,
+-            reasoning_parser_dict=reasoning_parser_dict,
+-        )
+-    else:
+-        full_text, full_reasoning = output.text, ""
++    full_text, full_reasoning = _apply_reasoning_parser(
++        reasoning_parser_id=reasoning_parser_id,
++        output_index=output_index,
++        text=output.text,
++        streaming=False,
++        reasoning_parser_dict=reasoning_parser_dict,
++    )
+ 
+     # Apply tool parsing to get tool calls
+     tool_calls = []
+@@ -1511,19 +1494,16 @@ def _generate_streaming_event(
+                     f"Parser({parser_id}) dictionary is not provided for streaming"
+                 )
+ 
++    check_parser(reasoning_parser_id, reasoning_parser_dict)
+     check_parser(tool_parser_id, tool_parser_dict)
+ 
+-    # Only parse reasoning when reasoning_effort is requested.
+-    reasoning_delta_text = ""
+-    if request.reasoning_effort is not None:
+-        check_parser(reasoning_parser_id, reasoning_parser_dict)
+-        delta_text, reasoning_delta_text = _apply_reasoning_parser(
+-            reasoning_parser_id=reasoning_parser_id,
+-            output_index=output_idx,
+-            text=delta_text,
+-            streaming=True,
+-            reasoning_parser_dict=reasoning_parser_dict,
+-        )
++    delta_text, reasoning_delta_text = _apply_reasoning_parser(
++        reasoning_parser_id=reasoning_parser_id,
++        output_index=output_idx,
++        text=delta_text,
++        streaming=True,
++        reasoning_parser_dict=reasoning_parser_dict,
++    )
+ 
+     if delta_text:
+         # TODO(JunyiXu-nv): handle tool calls in streaming mode
+@@ -1552,7 +1532,6 @@ def _generate_streaming_event(
+         tool_parser_dict=tool_parser_dict,
+         streaming_events_helper=streaming_events_helper,
+         finished_generation=finished_generation,
+-        reasoning_effort=request.reasoning_effort,
+     )
+ 
+     # Send done events if needed
+diff --git a/tensorrt_llm/version.py b/tensorrt_llm/version.py
+index d325cdbf5..434ba8f8e 100644
+--- a/tensorrt_llm/version.py
++++ b/tensorrt_llm/version.py
+@@ -12,4 +12,4 @@
+ # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+-__version__ = "1.2.0rc13"
++__version__ = "1.2.0rc8"
+diff --git a/twinupdate.sh b/twinupdate.sh
+deleted file mode 100644
+index bafa90c45..000000000
+--- a/twinupdate.sh
++++ /dev/null
+@@ -1,7 +0,0 @@
+-#you need to run twine and input the username and password
+-TWINE_USERNAME=oauth2accesstoken 
+-TWINE_PASSWORD=$(gcloud auth print-access-token --project public-py) 
+-echo $TWINE_USERNAME
+-echo $TWINE_PASSWORD
+-echo "twine upload --repository-url https://us-python.pkg.dev/fireworks-public/public-py/ ./dist-dir/tensorrt_llm-1.2.0rc13-cp312-cp312-linux_x86_64.whl"
+-twine upload --repository-url https://us-python.pkg.dev/fireworks-public/public-py/ ./dist-dir/tensorrt_llm-1.2.0rc13-cp312-cp312-linux_x86_64.whl 
