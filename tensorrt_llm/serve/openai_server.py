@@ -888,6 +888,8 @@ class OpenAIServer:
 
             async for res in promise:
                 pp_results = res.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(res, args)
+                if pp_results is None:
+                    continue 
                 for pp_res in pp_results:
                     yield pp_res
 
