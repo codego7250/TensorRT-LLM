@@ -362,7 +362,6 @@ class SamplingParams:
             # kimi_k2 model uses the eos_token_id in generation config
             if (
                 hf_model_config is not None
-                and hf_model_config.model_type == "deepseek_v3"
                 and generation_config is not None
                 and isinstance(generation_config.eos_token_id, int)
             ):
