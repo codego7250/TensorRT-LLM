@@ -70,6 +70,14 @@ TERMINATION_COMM_TAG_BASE = 20000
 PP_COMM_TAG_SCHEDULE_RESULT = 21000
 PP_COMM_TAG_SAMPLE_STATE_BASE = 21001
 
+"""
+from collections import defaultdict
+import array
+import json
+PROM_METRICS_FILENAME = '/dev/shm/prom_metrics.json'
+prom_metrics = defaultdict(float)
+prom_metrics_file = None
+"""
 
 @functools.cache
 def _load_iteration_indexes(env_var: str):
@@ -572,7 +580,7 @@ class PyExecutor:
                                 f"trace saved to {torch_trace_path}")
                 torch.cuda.cudart().cudaProfilerStop()
                 enabled = False
-
+            last_start_time = start_time
             if start_time is not None and self.print_log and self.dist.rank == 0:
                 end_time = time.time()
                 if it % 2 == 0:
@@ -625,7 +633,33 @@ class PyExecutor:
                 if start_event_2 is None:
                     start_event_2 = torch.cuda.Event(enable_timing=True)
                 start_event_2.record()
-
+            if last_start_time is not None and self.dist.rank == 0:
+                try:
+                    from .prometheus_metrics import (
+                        NUM_REQUESTS_RUNNING,
+                        NUM_REQUESTS_SWAPPED,
+                        PROMPT_TOKENS_TOTAL,
+                        GENERATION_TOKENS_TOTAL,
+                        ITERATION_TOKENS_TOTAL,
+                        TIME_PER_OUTPUT_TOKEN_SECONDS,
+                        REQUEST_PROMPT_TOKENS_TOTAL,
+                        REQUEST_GENERATION_TOKENS_TOTAL,
+                    )
+                    iter_states = self.model_engine.iter_states
+                    total_running = iter_states['num_ctx_requests'] + iter_states['num_generation_tokens'] / (1 + self.model_engine.max_draft_len)
+                    NUM_REQUESTS_RUNNING.set(total_running)
+                    NUM_REQUESTS_SWAPPED.set(total_running - len(self.active_requests))
+                    
+                    iteration_tokens = iter_states['num_ctx_tokens'] + iter_states['num_generation_tokens']
+                    ITERATION_TOKENS_TOTAL.inc(iteration_tokens)
+                    TIME_PER_OUTPUT_TOKEN_SECONDS.observe(start_time - last_start_time)
+                    PROMPT_TOKENS_TOTAL.inc(iter_states['num_ctx_tokens'])
+                    REQUEST_PROMPT_TOKENS_TOTAL.observe(iter_states['num_ctx_tokens'])
+                    GENERATION_TOKENS_TOTAL.inc(iter_states['num_generation_tokens'])
+                    REQUEST_GENERATION_TOKENS_TOTAL.observe(iter_states['num_generation_tokens'])
+                except Exception:
+                    # Silently fail if prometheus_client is not available
+                    pass
         try:
             yield profile_step
         finally:
@@ -637,6 +671,34 @@ class PyExecutor:
                     logger.info(f"Profiling stopped at iteration {it}, "
                                 f"trace saved to {torch_trace_path}")
                 torch.cuda.cudart().cudaProfilerStop()
+"""
+            if last_start_time is not None and self.dist.rank == 0:
+                iter_states = self.model_engine.iter_states
+                total_running = iter_states['num_ctx_requests'] + iter_states['num_generation_tokens'] / (1 + self.model_engine.max_draft_len)
+                prom_metrics["num_requests_running"] = total_running
+                prom_metrics["num_requests_swapped"] = total_running - len(self.active_requests)
+                prom_metrics["iteration_tokens_total_sum"] += iter_states['num_ctx_tokens'] + iter_states['num_generation_tokens']
+                prom_metrics["iteration_tokens_total_count"] += 1
+                prom_metrics["time_per_output_token_seconds_sum"] += (start_time - last_start_time)
+                prom_metrics["time_per_output_token_seconds_count"] += 1
+                prom_metrics["prompt_tokens_total"] += iter_states['num_ctx_tokens']
+                prom_metrics["request_prompt_tokens_total_sum"] += iter_states['num_ctx_tokens']
+                prom_metrics["request_prompt_tokens_total_count"] += 1
+                prom_metrics["generation_tokens_total"] += iter_states['num_generation_tokens']
+                prom_metrics["request_generation_tokens_total_sum"] += iter_states['num_generation_tokens']
+                prom_metrics["request_generation_tokens_total_count"] += 1
+                global prom_metrics_file
+                try:
+                    if prom_metrics_file is None:
+                        prom_metrics_file = os.open(PROM_METRICS_FILENAME,
+                                                    os.O_RDWR|os.O_CREAT)
+                    os.pwrite(prom_metrics_file, (
+                        json.dumps(list(prom_metrics.keys())).encode('UTF-8') +
+                        b'\0' +
+                        array.array('d',prom_metrics.values()).tobytes()), 0)
+                except:
+                    traceback.print_exc()
+ """
 
     def _get_init_iter_stats(self, num_new_active_requests,
                              new_active_requests_queue_latency_ms):

@@ -307,7 +307,7 @@ class CompletionRequest(OpenAIBaseModel):
             max_tokens=self.max_tokens,
             n=self.n,
             presence_penalty=self.presence_penalty,
-            seed=self.seed,
+            seed=to_unsigned(self.seed, 64) if self.seed is not None else None,
             stop=self.stop,
             temperature=(self.temperature
                          if self.temperature is not None else 1.0),
@@ -316,7 +316,7 @@ class CompletionRequest(OpenAIBaseModel):
 
             # completion-sampling-params
             use_beam_search=self.use_beam_search,
-            top_k=self.top_k,
+            top_k=max(0, self.top_k),
             top_p_min=self.top_p_min if self.top_p_min > 0 else None,
             min_p=self.min_p,
             repetition_penalty=self.repetition_penalty,
@@ -655,7 +655,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
             max_tokens=self.max_completion_tokens,
             n=self.n,
             presence_penalty=self.presence_penalty,
-            seed=self.seed,
+            seed=to_unsigned(self.seed, 64) if self.seed is not None else None,
             stop=self.stop,
             temperature=(self.temperature
                          if self.temperature is not None else 1.0),
@@ -664,7 +664,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
             # chat-completion-sampling-params
             best_of=self.best_of,
             use_beam_search=self.use_beam_search,
-            top_k=self.top_k,
+            top_k=max(0, self.top_k),
             top_p=(self.top_p if self.top_p is not None else 1.0),
             top_p_min=self.top_p_min if self.top_p_min > 0 else None,
             min_p=self.min_p,
