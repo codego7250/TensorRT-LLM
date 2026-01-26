@@ -150,7 +150,16 @@ class OpenAIServer:
         self.perf_metrics_lock = None
         # The steady clock offset (in seconds) between this server and the disagg server
         self.disagg_server_steady_clock_offset = 0
+
         self.prometheus_enabled = self.llm.args.return_perf_metrics
+        import os
+        deployment_name = os.getenv("FIREWORKS_DEPLOYMENT_NAME", "undefined")
+        if self.prometheus_enabled:
+            self._prom_labels = {
+                "model_name": self.model,
+                "deployment": deployment_name,
+                "engine_type": "trtllm"
+            }
         if self.llm.args.return_perf_metrics:
             import os
             deployment_name = os.getenv("FIREWORKS_DEPLOYMENT_NAME", "undefined")
@@ -391,52 +400,26 @@ class OpenAIServer:
 
     async def metrics(self) -> Response:
         try:
-            from prometheus_client import (REGISTRY, Gauge, Summary,
-                                           generate_latest)
+            from prometheus_client import REGISTRY, generate_latest
 
             from tensorrt_llm._torch.pyexecutor.prometheus_metrics import \
                 read_metrics_from_file
 
             # Read executor metrics from shared file and update prometheus metrics
             executor_metrics = read_metrics_from_file()
+            labels = self._prom_labels
             if executor_metrics:
-                # Get or create prometheus metrics for executor data
-                if not hasattr(self, '_fw_metrics_initialized'):
-                    self._fw_num_requests_running = Gauge(
-                        'fw_num_requests_running',
-                        'Number of requests currently running')
-                    self._fw_num_requests_swapped = Gauge(
-                        'fw_num_requests_swapped',
-                        'Number of requests currently swapped')
-                    self._fw_prompt_tokens_total = Gauge(
-                        'fw_prompt_tokens_total',
-                        'Total number of prompt tokens processed')
-                    self._fw_generation_tokens_total = Gauge(
-                        'fw_generation_tokens_total',
-                        'Total number of generation tokens produced')
-                    self._fw_iteration_tokens_total = Summary(
-                        'fw_iteration_tokens_total',
-                        'Total tokens processed per iteration')
-                    self._fw_time_per_output_token_seconds = Summary(
-                        'fw_time_per_output_token_seconds',
-                        'Time per output token in seconds')
-                    self._fw_request_prompt_tokens_total = Summary(
-                        'fw_request_prompt_tokens_total',
-                        'Prompt tokens per request')
-                    self._fw_request_generation_tokens_total = Summary(
-                        'fw_request_generation_tokens_total',
-                        'Generation tokens per request')
-                    self._fw_metrics_initialized = True
+                if not hasattr(self, '_last_executor_metrics'):
                     self._last_executor_metrics = {}
 
                 # Update gauges directly
-                self._fw_num_requests_running.set(
+                self._num_requests_running.labels(**labels).set(
                     executor_metrics.get("num_requests_running", 0))
-                self._fw_num_requests_swapped.set(
+                self._num_requests_swapped.labels(**labels).set(
                     executor_metrics.get("num_requests_swapped", 0))
-                self._fw_prompt_tokens_total.set(
+                self._prompt_tokens_total.labels(**labels).set(
                     executor_metrics.get("prompt_tokens_total", 0))
-                self._fw_generation_tokens_total.set(
+                self._generation_tokens_total.labels(**labels).set(
                     executor_metrics.get("generation_tokens_total", 0))
 
                 # For summaries, observe the delta since last read
@@ -454,22 +437,7 @@ class OpenAIServer:
                     if delta_count > 0:
                         avg = (new_sum - old_sum) / delta_count
                         for _ in range(int(delta_count)):
-                            self._fw_iteration_tokens_total.observe(avg)
-
-                # Time per output token
-                new_count = executor_metrics.get(
-                    "time_per_output_token_seconds_count", 0)
-                old_count = last.get("time_per_output_token_seconds_count", 0)
-                if new_count > old_count:
-                    new_sum = executor_metrics.get(
-                        "time_per_output_token_seconds_sum", 0)
-                    old_sum = last.get("time_per_output_token_seconds_sum", 0)
-                    delta_count = new_count - old_count
-                    if delta_count > 0:
-                        avg = (new_sum - old_sum) / delta_count
-                        for _ in range(int(delta_count)):
-                            self._fw_time_per_output_token_seconds.observe(avg)
-
+                            self._iteration_tokens_total.labels(**labels).observe(avg)
                 # Request prompt tokens
                 new_count = executor_metrics.get(
                     "request_prompt_tokens_total_count", 0)
@@ -482,7 +450,7 @@ class OpenAIServer:
                     if delta_count > 0:
                         avg = (new_sum - old_sum) / delta_count
                         for _ in range(int(delta_count)):
-                            self._fw_request_prompt_tokens_total.observe(avg)
+                            self._request_prompt_tokens_total.labels(**labels).observe(avg)
 
                 # Request generation tokens
                 new_count = executor_metrics.get(
@@ -496,20 +464,16 @@ class OpenAIServer:
                     if delta_count > 0:
                         avg = (new_sum - old_sum) / delta_count
                         for _ in range(int(delta_count)):
-                            self._fw_request_generation_tokens_total.observe(
+                            self._request_generation_tokens_total.labels(**labels).observe(
                                 avg)
-
                 self._last_executor_metrics = executor_metrics.copy()
+            # Update KV cache metrics from iteration stats
+            await self.get_iteration_stats()
+            if "kvCacheStats" in self.last_iteration_stat and self.prometheus_enabled:
+                self._update_kv_cache_metrics(self.last_iteration_stat["kvCacheStats"])
 
             # Generate Prometheus format output
             metrics_output = generate_latest(REGISTRY).decode('utf-8')
-
-            # Add iteration stats if available
-            await self.get_iteration_stats()
-            if "kvCacheStats" in self.last_iteration_stat:
-                kv_cache_metrics = self._format_kv_cache_stats(
-                    self.last_iteration_stat["kvCacheStats"])
-                metrics_output += kv_cache_metrics
 
             return Response(status_code=200,
                             content=metrics_output,
@@ -521,13 +485,17 @@ class OpenAIServer:
             return Response(status_code=500,
                             content=f"Error generating metrics: {str(e)}")
 
-    def _format_kv_cache_stats(self, kv_stats: dict) -> str:
-        """Format KV cache stats in Prometheus format."""
-        result = []
-        for key, value in kv_stats.items():
-            metric_name = f"kv_cache_{key}"
-            result.append(f'{metric_name}{{model_name="{self.model}"}} {value}')
-        return '\n'.join(result) + '\n'
+    def _update_kv_cache_metrics(self, kv_stats: dict) -> None:
+        """Update KV cache Prometheus metrics."""
+        max_blocks = kv_stats.get("maxNumBlocks", 0)
+        used_blocks = kv_stats.get("usedNumBlocks", 0)
+
+        # Calculate utilization percentage (0-100)
+        if max_blocks > 0:
+            utilization = (used_blocks / max_blocks) * 100
+        else:
+            utilization = 0.0
+        self._prom_kv_cache_usage_perc.labels(**self._prom_labels).set(utilization)
 
     async def version(self) -> JSONResponse:
         ver = {"version": VERSION}
@@ -660,10 +628,6 @@ class OpenAIServer:
                         for choice in pp_res.choices:
                             if choice.finish_reason is not None:
                                 did_complete = True
-                                if self.prometheus_enabled:
-                                    self.prom_request_completed.inc()
-                                    self.prom_request_success.labels(finished_reason=choice.finish_reason).inc()
-
                             pp_res_json = pp_res.model_dump_json(exclude_unset=True)
                             yield f"data: {pp_res_json}\n\n"
                 # Making sure we can handling the situation where there is only one response
@@ -674,10 +638,6 @@ class OpenAIServer:
                         for choice in pp_res.choices:
                             if choice.finish_reason is not None:
                                 did_complete = True
-                                if self.prometheus_enabled:
-                                    self.prom_request_completed.inc()
-                                    self.prom_request_success.labels(finished_reason=choice.finish_reason).inc()
-
                         pp_res_json = pp_res.model_dump_json(exclude_unset=True)
                         yield f"data: {pp_res_json}\n\n"
                 yield "data: [DONE]\n\n"
@@ -686,8 +646,6 @@ class OpenAIServer:
 
             finally:
                 if not did_complete:
-                    if self.prometheus_enabled:
-                        self.prom_request_cancelled.inc()
                     promise.abort()
                 logger.error(traceback.format_exc())
                 raise
@@ -701,12 +659,6 @@ class OpenAIServer:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
                 chat_response = post_processor(promise, args)
 
-            for choice in chat_response.choices:
-                if choice.finish_reason is not None:
-                    if self.prometheus_enabled:
-                        self.prom_request_completed.inc()
-                        self.prom_request_success.labels(finished_reason=choice.finish_reason).inc()
-
             # Add prompt_tokens_ids to the response
             if disaggregated_params and disaggregated_params.request_type and disaggregated_params.request_type == "context_only":
                 chat_response.prompt_token_ids = promise.prompt_token_ids
@@ -714,8 +666,6 @@ class OpenAIServer:
             await self._extract_metrics(promise, raw_request)
             return chat_response
 
-        if self.prometheus_enabled:
-            self.prom_request_started.inc()
         promise: Optional[RequestOutput] = None
 
         try:
@@ -800,22 +750,19 @@ class OpenAIServer:
                 return JSONResponse(content=response.model_dump())
 
         except asyncio.CancelledError:
-
-            if self.prometheus_enabled:
-                self.prom_request_cancelled.inc()
             if promise is not None:
                 promise.abort()
             return self.create_error_response("cancelled")
         except CppExecutorError:
             logger.error(traceback.format_exc())
             if self.prometheus_enabled:
-                self.prom_request_failed.inc()
+                self._prom_request_failed.labels(**self._prom_labels).inc()
             # If internal executor error is raised, shutdown the server
             signal.raise_signal(signal.SIGINT)
         except Exception as e:
             logger.error(traceback.format_exc())
             if self.prometheus_enabled:
-                self.prom_request_failed.inc()
+                self._prom_request_failed.labels(**self._prom_labels).inc()
             return self.create_error_response(str(e))
 
     async def openai_mm_encoder(self, request: ChatCompletionRequest, raw_request: Request) -> Response:
@@ -912,11 +859,6 @@ class OpenAIServer:
                 pp_result.prompt_token_ids = response.prompt_token_ids
             raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds()
             await self._extract_metrics(response, raw_request)
-            for choice in pp_result.choices:
-                if choice.finish_reason is not None:
-                    if self.prometheus_enabled:
-                        self.prom_request_completed.inc()
-                        self.prom_request_success.labels(finished_reason=choice.finish_reason).inc()
             return pp_result
 
         def merge_completion_responses(responses: List[CompletionResponse]) -> CompletionResponse:
@@ -965,16 +907,11 @@ class OpenAIServer:
                             for choice in pp_res.choices:
                                 if choice.finish_reason is not None:
                                     did_complete = True
-                                    if self.prometheus_enabled:
-                                        self.prom_request_completed.inc()
-                                        self.prom_request_success.labels(finished_reason=choice.finish_reason).inc()
                             pp_res_json = pp_res.model_dump_json(exclude_unset=True)
                             yield f"data: {pp_res_json}\n\n"
             finally:
                 print(f"Completion generator finally {did_complete=}")
                 if not did_complete:
-                    if self.prometheus_enabled:
-                        self.prom_request_cancelled.inc()
                     promise.abort()
 
         async def merge_generators(generators: List[AsyncIterator[Any]]):
@@ -1005,8 +942,6 @@ class OpenAIServer:
             async for output in generator:
                 yield output
             yield "data: [DONE]\n\n"
-        if self.prometheus_enabled:
-            self.prom_request_started.inc()
         try:
             if isinstance(request.prompt, str) or \
                 (isinstance(request.prompt, list) and isinstance(request.prompt[0], int)):
@@ -1079,12 +1014,12 @@ class OpenAIServer:
         except CppExecutorError:
             logger.error(traceback.format_exc())
             if self.prometheus_enabled:
-                self.prom_request_failed.inc()
+                self._prom_request_failed.labels(**self._prom_labels).inc()
             # If internal executor error is raised, shutdown the server
             signal.raise_signal(signal.SIGINT)
         except Exception as e:
             if self.prometheus_enabled:
-                self.prom_request_failed.inc()
+                self._prom_request_failed.labels(**self._prom_labels).inc()
             logger.error(traceback.format_exc())
             return self.create_error_response(str(e))
 
@@ -1106,13 +1041,6 @@ class OpenAIServer:
             response = await promise
             raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds()
             await self._extract_metrics(response, raw_request)
-
-            for choice in chat_response.choices:
-                if choice.finish_reason is not None:
-                    if self.prometheus_enabled:
-                        self.prom_request_completed.inc()
-                        self.prom_request_success.labels(finished_reason=choice.finish_reason).inc()
-
             return chat_response
 
         async def create_streaming_generator(promise: RequestOutput, postproc_params: PostprocParams):
@@ -1282,13 +1210,13 @@ class OpenAIServer:
         except CppExecutorError:
             logger.error(traceback.format_exc())
             if self.prometheus_enabled:
-                self.prom_request_failed.inc()
+                self._prom_request_failed.labels(**self._prom_labels).inc()
             # If internal executor error is raised, shutdown the server
             signal.raise_signal(signal.SIGINT)
         except Exception as e:
             logger.error(traceback.format_exc())
             if self.prometheus_enabled:
-                self.prom_request_failed.inc()
+                self._prom_request_failed.labels(**self._prom_labels).inc()
             return self.create_error_response(str(e))
 
         return JSONResponse(content={"detail": "None"})
