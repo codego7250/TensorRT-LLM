@@ -38,13 +38,19 @@ NUM_REQUESTS_SWAPPED = Gauge(
     COMMON_LABELS
 )
 
-PROMPT_TOKENS_TOTAL = Gauge(
+NUM_REQUESTS_CONCURRENT = Gauge(
+    "num_requests_concurrent",
+    "Number of concurrent requests",
+    COMMON_LABELS
+)
+
+PROMPT_TOKENS_TOTAL = Counter(
     "prompt_tokens_total",
     "Total number of prompt tokens processed",
     COMMON_LABELS
 )
 
-GENERATION_TOKENS_TOTAL = Gauge(
+GENERATION_TOKENS_TOTAL = Counter(
     "generation_tokens_total",
     "Total number of generation tokens produced",
     COMMON_LABELS

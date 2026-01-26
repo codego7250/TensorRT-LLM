@@ -417,10 +417,17 @@ class OpenAIServer:
                     executor_metrics.get("num_requests_running", 0))
                 self._num_requests_swapped.labels(**labels).set(
                     executor_metrics.get("num_requests_swapped", 0))
-                self._prompt_tokens_total.labels(**labels).set(
-                    executor_metrics.get("prompt_tokens_total", 0))
-                self._generation_tokens_total.labels(**labels).set(
-                    executor_metrics.get("generation_tokens_total", 0))
+
+                last = self._last_executor_metrics
+                new_prompt = executor_metrics.get("prompt_tokens_total", 0)
+                old_prompt = last.get("prompt_tokens_total", 0)
+                if new_prompt > old_prompt:
+                    self._prompt_tokens_total.labels(**labels).inc(new_prompt - old_prompt)
+
+                new_gen = executor_metrics.get("generation_tokens_total", 0)
+                old_gen = last.get("generation_tokens_total", 0)
+                if new_gen > old_gen:
+                    self._generation_tokens_total.labels(**labels).inc(new_gen - old_gen)
 
                 # For summaries, observe the delta since last read
                 last = self._last_executor_metrics
@@ -467,10 +474,20 @@ class OpenAIServer:
                             self._request_generation_tokens_total.labels(**labels).observe(
                                 avg)
                 self._last_executor_metrics = executor_metrics.copy()
-            # Update KV cache metrics from iteration stats
+
+            # Update KV cache and request queue metrics from iteration stats
             await self.get_iteration_stats()
-            if "kvCacheStats" in self.last_iteration_stat and self.prometheus_enabled:
-                self._update_kv_cache_metrics(self.last_iteration_stat["kvCacheStats"])
+            if self.last_iteration_stat and self.prometheus_enabled:
+                if "kvCacheStats" in self.last_iteration_stat:
+                    self._update_kv_cache_metrics(self.last_iteration_stat["kvCacheStats"])
+
+                # Update waiting and concurrent request counts
+                num_waiting = self.last_iteration_stat.get("numQueuedRequests", 0)
+                self._num_requests_waiting.labels(**labels).set(num_waiting)
+
+                # Concurrent = running + waiting
+                num_running = executor_metrics.get("num_requests_running", 0) if executor_metrics else 0
+                self._num_requests_concurrent.labels(**labels).set(num_running + num_waiting)
 
             # Generate Prometheus format output
             metrics_output = generate_latest(REGISTRY).decode('utf-8')
