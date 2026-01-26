@@ -671,34 +671,6 @@ class PyExecutor:
                     logger.info(f"Profiling stopped at iteration {it}, "
                                 f"trace saved to {torch_trace_path}")
                 torch.cuda.cudart().cudaProfilerStop()
-"""
-            if last_start_time is not None and self.dist.rank == 0:
-                iter_states = self.model_engine.iter_states
-                total_running = iter_states['num_ctx_requests'] + iter_states['num_generation_tokens'] / (1 + self.model_engine.max_draft_len)
-                prom_metrics["num_requests_running"] = total_running
-                prom_metrics["num_requests_swapped"] = total_running - len(self.active_requests)
-                prom_metrics["iteration_tokens_total_sum"] += iter_states['num_ctx_tokens'] + iter_states['num_generation_tokens']
-                prom_metrics["iteration_tokens_total_count"] += 1
-                prom_metrics["time_per_output_token_seconds_sum"] += (start_time - last_start_time)
-                prom_metrics["time_per_output_token_seconds_count"] += 1
-                prom_metrics["prompt_tokens_total"] += iter_states['num_ctx_tokens']
-                prom_metrics["request_prompt_tokens_total_sum"] += iter_states['num_ctx_tokens']
-                prom_metrics["request_prompt_tokens_total_count"] += 1
-                prom_metrics["generation_tokens_total"] += iter_states['num_generation_tokens']
-                prom_metrics["request_generation_tokens_total_sum"] += iter_states['num_generation_tokens']
-                prom_metrics["request_generation_tokens_total_count"] += 1
-                global prom_metrics_file
-                try:
-                    if prom_metrics_file is None:
-                        prom_metrics_file = os.open(PROM_METRICS_FILENAME,
-                                                    os.O_RDWR|os.O_CREAT)
-                    os.pwrite(prom_metrics_file, (
-                        json.dumps(list(prom_metrics.keys())).encode('UTF-8') +
-                        b'\0' +
-                        array.array('d',prom_metrics.values()).tobytes()), 0)
-                except:
-                    traceback.print_exc()
- """
 
     def _get_init_iter_stats(self, num_new_active_requests,
                              new_active_requests_queue_latency_ms):

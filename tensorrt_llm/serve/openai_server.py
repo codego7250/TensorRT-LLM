@@ -135,6 +135,7 @@ class OpenAIServer:
 
         # Enable response storage for Responses API
         self.enable_store = True
+        import os
         if len(os.getenv("TRTLLM_RESPONSES_API_DISABLE_STORE", "")) > 0:
             self.enable_store = False
         self.conversation_store = ConversationHistoryStore()
@@ -149,6 +150,7 @@ class OpenAIServer:
         self.perf_metrics_lock = None
         # The steady clock offset (in seconds) between this server and the disagg server
         self.disagg_server_steady_clock_offset = 0
+        self.prometheus_enabled = self.llm.args.return_perf_metrics
         if self.llm.args.return_perf_metrics:
             import os
             deployment_name = os.getenv("FIREWORKS_DEPLOYMENT_NAME", "undefined")
@@ -452,49 +454,6 @@ class OpenAIServer:
             metric_name = f"kv_cache_{key}"
             result.append(f'{metric_name}{{model_name="{self.model}"}} {value}')
         return '\n'.join(result) + '\n'
-"""
-        global prom_metrics_file
-        bufs = None
-        try:
-            if prom_metrics_file is None:
-                prom_metrics_file = os.open(PROM_METRICS_FILENAME,
-                                            os.O_RDWR|os.O_CREAT|os.O_TRUNC)
-            bufs = os.pread(prom_metrics_file, 65536, 0).split(b'\0', 1)
-            if len(bufs) >= 2:
-                keybuf, valbuf = bufs
-                key_list = json.loads(keybuf.decode('UTF-8'))
-                value_list = array.array('d')
-                value_list.frombytes(valbuf)
-                for key, value in zip(key_list, value_list):
-                    prom_metrics[key] = value
-        except:
-            print(bufs)
-            traceback.print_exc()
-
-        all_requests_done = (
-                prom_metrics["request_completed_total"] +
-                prom_metrics["request_cancelled_total"] +
-                prom_metrics["request_failed_total"])
-
-        # NOTE: metrics do not update if the other thread is not running any requests.
-        # Make sure to zero out running and waiting in this case.
-        if prom_metrics["request_started_total"] == all_requests_done:
-            prom_metrics["num_requests_running"] = 0
-
-        # Detect number of requests not being processed by the TensorRT-LLM engine.
-        prom_metrics["num_requests_waiting"] = max(0, prom_metrics["request_started_total"] - (
-                prom_metrics["num_requests_running"] + all_requests_done))
-
-        resp = ''
-        for metric_key, metric_val in prom_metrics.items():
-            separator = ',' if '{' in metric_key else '{'
-            resp += f'fw:{metric_key}{separator}model_name="{self.model}"}} {float(metric_val)}\n'
-        await self.get_iteration_stats()
-        if "kvCacheStats" in self.last_iteration_stat:
-            resp += self.format_kv_cache_stats(self.last_iteration_stat["kvCacheStats"])
-
-        return Response(status_code=200, content=resp)
-"""
 
     async def version(self) -> JSONResponse:
         ver = {"version": VERSION}
