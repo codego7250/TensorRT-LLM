@@ -179,6 +179,8 @@ def launch_server(
 
     backend = llm_args["backend"]
     model = llm_args["model"]
+    if llm_args.get("return_perf_metrics", False):
+        set_prometheus_multiproc_dir()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
             s.bind((host, port))

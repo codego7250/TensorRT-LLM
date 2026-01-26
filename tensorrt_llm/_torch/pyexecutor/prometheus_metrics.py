@@ -1,50 +1,68 @@
-"""Prometheus metrics for PyExecutor."""
+"""Prometheus metrics for PyExecutor.
 
-from prometheus_client import Counter, Gauge, Histogram
+Uses a simple file-based approach for cross-process metric sharing.
+The worker writes metrics to a file, and the main process reads and exposes them.
+"""
+
+import array
+import json
+import os
+import tempfile
+
+# File path for sharing metrics between worker and main process
+PROM_METRICS_FILENAME = os.path.join(tempfile.gettempdir(), "trtllm_prom_metrics.bin")
+
+# Global file handle for writing metrics
+prom_metrics_file = None
+
+# Metrics dictionary - accumulated by worker, read by main process
+prom_metrics = {
+    "num_requests_running": 0.0,
+    "num_requests_swapped": 0.0,
+    "iteration_tokens_total_sum": 0.0,
+    "iteration_tokens_total_count": 0.0,
+    "time_per_output_token_seconds_sum": 0.0,
+    "time_per_output_token_seconds_count": 0.0,
+    "prompt_tokens_total": 0.0,
+    "request_prompt_tokens_total_sum": 0.0,
+    "request_prompt_tokens_total_count": 0.0,
+    "generation_tokens_total": 0.0,
+    "request_generation_tokens_total_sum": 0.0,
+    "request_generation_tokens_total_count": 0.0,
+}
 
 
-# Gauges (current state)
-NUM_REQUESTS_RUNNING = Gauge(
-    'num_requests_running',
-    'Number of requests currently running'
-)
+def write_metrics_to_file():
+    """Write current metrics to shared file for main process to read."""
+    global prom_metrics_file
+    try:
+        if prom_metrics_file is None:
+            prom_metrics_file = os.open(PROM_METRICS_FILENAME, os.O_RDWR | os.O_CREAT)
+        # Write keys as JSON followed by null byte, then binary doubles
+        data = (
+            json.dumps(list(prom_metrics.keys())).encode("UTF-8")
+            + b"\0"
+            + array.array("d", prom_metrics.values()).tobytes()
+        )
+        os.pwrite(prom_metrics_file, data, 0)
+    except Exception:
+        pass  # Silently fail if file operations fail
 
-NUM_REQUESTS_SWAPPED = Gauge(
-    'num_requests_swapped',
-    'Number of requests currently swapped'
-)
 
-# Counters (cumulative)
-PROMPT_TOKENS_TOTAL = Counter(
-    'prompt_tokens_total',
-    'Total number of prompt tokens processed'
-)
-
-GENERATION_TOKENS_TOTAL = Counter(
-    'generation_tokens_total',
-    'Total number of generation tokens produced'
-)
-
-ITERATION_TOKENS_TOTAL = Counter(
-    'iteration_tokens_total',
-    'Total number of tokens processed per iteration'
-)
-
-# Histograms (distributions)
-TIME_PER_OUTPUT_TOKEN_SECONDS = Histogram(
-    'time_per_output_token_seconds',
-    'Time per output token in seconds',
-    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
-)
-
-REQUEST_PROMPT_TOKENS_TOTAL = Histogram(
-    'request_prompt_tokens_total',
-    'Prompt tokens per request',
-    buckets=(1, 10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000)
-)
-
-REQUEST_GENERATION_TOKENS_TOTAL = Histogram(
-    'request_generation_tokens_total',
-    'Generation tokens per request',
-    buckets=(1, 10, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
-)
+def read_metrics_from_file():
+    """Read metrics from shared file (called by main process)."""
+    try:
+        if not os.path.exists(PROM_METRICS_FILENAME):
+            return None
+        with open(PROM_METRICS_FILENAME, "rb") as f:
+            data = f.read()
+        if not data:
+            return None
+        # Parse: JSON keys + null byte + binary doubles
+        null_idx = data.index(b"\0")
+        keys = json.loads(data[:null_idx].decode("UTF-8"))
+        values = array.array("d")
+        values.frombytes(data[null_idx + 1 :])
+        return dict(zip(keys, values))
+    except Exception:
+        return None

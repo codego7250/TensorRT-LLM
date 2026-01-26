@@ -391,62 +391,136 @@ class OpenAIServer:
 
     async def metrics(self) -> Response:
         try:
-            from prometheus_client import (REGISTRY, CollectorRegistry, 
-                                          generate_latest, multiprocess)
-            from tensorrt_llm.serve.prometheus_metrics import (
-                REQUEST_STARTED_TOTAL,
-                REQUEST_COMPLETED_TOTAL,
-                REQUEST_CANCELLED_TOTAL,
-                REQUEST_FAILED_TOTAL,
-                NUM_REQUESTS_WAITING,
-            )
-            from tensorrt_llm._torch.pyexecutor.prometheus_metrics import (
-                NUM_REQUESTS_RUNNING,
-                NUM_REQUESTS_SWAPPED,
-                PROMPT_TOKENS_TOTAL,
-                GENERATION_TOKENS_TOTAL,
-            )
-            
-            # Create a registry for multiprocess mode
-            registry = CollectorRegistry()
-            try:
-                multiprocess.MultiProcessCollector(registry)
-            except Exception:
-                # If multiprocess mode is not set up, use default registry
-                registry = REGISTRY
-            # Calculate derived metrics
-            all_requests_done = (
-                REQUEST_COMPLETED_TOTAL._value.get() +
-                REQUEST_CANCELLED_TOTAL._value.get() +
-                REQUEST_FAILED_TOTAL._value.get()
-            )
-            
-            # If no requests are running, zero out the running gauge
-            if REQUEST_STARTED_TOTAL._value.get() == all_requests_done:
-                NUM_REQUESTS_RUNNING.set(0)
+            from prometheus_client import (REGISTRY, Gauge, Summary,
+                                           generate_latest)
 
-            # Calculate number of requests waiting in queue
-            # (started but not yet running or completed)
-            num_waiting = max(0, REQUEST_STARTED_TOTAL._value.get() - (
-                NUM_REQUESTS_RUNNING._value.get() + all_requests_done))
-            NUM_REQUESTS_WAITING.set(num_waiting)
+            from tensorrt_llm._torch.pyexecutor.prometheus_metrics import \
+                read_metrics_from_file
+
+            # Read executor metrics from shared file and update prometheus metrics
+            executor_metrics = read_metrics_from_file()
+            if executor_metrics:
+                # Get or create prometheus metrics for executor data
+                if not hasattr(self, '_fw_metrics_initialized'):
+                    self._fw_num_requests_running = Gauge(
+                        'fw_num_requests_running',
+                        'Number of requests currently running')
+                    self._fw_num_requests_swapped = Gauge(
+                        'fw_num_requests_swapped',
+                        'Number of requests currently swapped')
+                    self._fw_prompt_tokens_total = Gauge(
+                        'fw_prompt_tokens_total',
+                        'Total number of prompt tokens processed')
+                    self._fw_generation_tokens_total = Gauge(
+                        'fw_generation_tokens_total',
+                        'Total number of generation tokens produced')
+                    self._fw_iteration_tokens_total = Summary(
+                        'fw_iteration_tokens_total',
+                        'Total tokens processed per iteration')
+                    self._fw_time_per_output_token_seconds = Summary(
+                        'fw_time_per_output_token_seconds',
+                        'Time per output token in seconds')
+                    self._fw_request_prompt_tokens_total = Summary(
+                        'fw_request_prompt_tokens_total',
+                        'Prompt tokens per request')
+                    self._fw_request_generation_tokens_total = Summary(
+                        'fw_request_generation_tokens_total',
+                        'Generation tokens per request')
+                    self._fw_metrics_initialized = True
+                    self._last_executor_metrics = {}
+
+                # Update gauges directly
+                self._fw_num_requests_running.set(
+                    executor_metrics.get("num_requests_running", 0))
+                self._fw_num_requests_swapped.set(
+                    executor_metrics.get("num_requests_swapped", 0))
+                self._fw_prompt_tokens_total.set(
+                    executor_metrics.get("prompt_tokens_total", 0))
+                self._fw_generation_tokens_total.set(
+                    executor_metrics.get("generation_tokens_total", 0))
+
+                # For summaries, observe the delta since last read
+                last = self._last_executor_metrics
+
+                # Iteration tokens
+                new_count = executor_metrics.get("iteration_tokens_total_count",
+                                                 0)
+                old_count = last.get("iteration_tokens_total_count", 0)
+                if new_count > old_count:
+                    new_sum = executor_metrics.get("iteration_tokens_total_sum",
+                                                   0)
+                    old_sum = last.get("iteration_tokens_total_sum", 0)
+                    delta_count = new_count - old_count
+                    if delta_count > 0:
+                        avg = (new_sum - old_sum) / delta_count
+                        for _ in range(int(delta_count)):
+                            self._fw_iteration_tokens_total.observe(avg)
+
+                # Time per output token
+                new_count = executor_metrics.get(
+                    "time_per_output_token_seconds_count", 0)
+                old_count = last.get("time_per_output_token_seconds_count", 0)
+                if new_count > old_count:
+                    new_sum = executor_metrics.get(
+                        "time_per_output_token_seconds_sum", 0)
+                    old_sum = last.get("time_per_output_token_seconds_sum", 0)
+                    delta_count = new_count - old_count
+                    if delta_count > 0:
+                        avg = (new_sum - old_sum) / delta_count
+                        for _ in range(int(delta_count)):
+                            self._fw_time_per_output_token_seconds.observe(avg)
+
+                # Request prompt tokens
+                new_count = executor_metrics.get(
+                    "request_prompt_tokens_total_count", 0)
+                old_count = last.get("request_prompt_tokens_total_count", 0)
+                if new_count > old_count:
+                    new_sum = executor_metrics.get(
+                        "request_prompt_tokens_total_sum", 0)
+                    old_sum = last.get("request_prompt_tokens_total_sum", 0)
+                    delta_count = new_count - old_count
+                    if delta_count > 0:
+                        avg = (new_sum - old_sum) / delta_count
+                        for _ in range(int(delta_count)):
+                            self._fw_request_prompt_tokens_total.observe(avg)
+
+                # Request generation tokens
+                new_count = executor_metrics.get(
+                    "request_generation_tokens_total_count", 0)
+                old_count = last.get("request_generation_tokens_total_count", 0)
+                if new_count > old_count:
+                    new_sum = executor_metrics.get(
+                        "request_generation_tokens_total_sum", 0)
+                    old_sum = last.get("request_generation_tokens_total_sum", 0)
+                    delta_count = new_count - old_count
+                    if delta_count > 0:
+                        avg = (new_sum - old_sum) / delta_count
+                        for _ in range(int(delta_count)):
+                            self._fw_request_generation_tokens_total.observe(
+                                avg)
+
+                self._last_executor_metrics = executor_metrics.copy()
 
             # Generate Prometheus format output
-            metrics_output = generate_latest(registry).decode('utf-8')
-            
+            metrics_output = generate_latest(REGISTRY).decode('utf-8')
+
             # Add iteration stats if available
             await self.get_iteration_stats()
             if "kvCacheStats" in self.last_iteration_stat:
-                kv_cache_metrics = self._format_kv_cache_stats(self.last_iteration_stat["kvCacheStats"])
+                kv_cache_metrics = self._format_kv_cache_stats(
+                    self.last_iteration_stat["kvCacheStats"])
                 metrics_output += kv_cache_metrics
-            
-            return Response(status_code=200, content=metrics_output, media_type="text/plain")
+
+            return Response(status_code=200,
+                            content=metrics_output,
+                            media_type="text/plain")
         except Exception as e:
             logger.error(f"Error generating metrics: {e}")
             import traceback
             traceback.print_exc()
-            return Response(status_code=500, content=f"Error generating metrics: {str(e)}")
-    
+            return Response(status_code=500,
+                            content=f"Error generating metrics: {str(e)}")
+
     def _format_kv_cache_stats(self, kv_stats: dict) -> str:
         """Format KV cache stats in Prometheus format."""
         result = []
