@@ -75,6 +75,20 @@ from .harmony_adapter import (HarmonyAdapter, get_harmony_adapter,
 
 # yapf: enale
 TIMEOUT_KEEP_ALIVE = 5  # seconds.
+"""
+PROM_METRICS_FILENAME = '/dev/shm/prom_metrics.json'
+from collections import defaultdict
+import array
+import json
+import traceback
+prom_metrics_file = None
+prom_metrics = defaultdict(float, {
+    "num_requests_running": 0,
+    "num_requests_waiting": 0,
+    "prompt_tokens_total": 0,
+    "generation_tokens_total": 0,
+})
+"""
 
 
 class OpenAIServer:
@@ -102,6 +116,7 @@ class OpenAIServer:
         self.port = None
         hf_tokenizer_path = llm._hf_model_dir or self.tokenizer.tokenizer.name_or_path
         trust_remote_code = llm.args.trust_remote_code
+        self.last_iteration_stat = {}
         try:
             self.processor = AutoProcessor.from_pretrained(hf_tokenizer_path, trust_remote_code=trust_remote_code)
         except Exception:
@@ -135,10 +150,13 @@ class OpenAIServer:
         # The steady clock offset (in seconds) between this server and the disagg server
         self.disagg_server_steady_clock_offset = 0
         if self.llm.args.return_perf_metrics:
+            import os
+            deployment_name = os.getenv("FIREWORKS_DEPLOYMENT_NAME", "undefined")
             set_prometheus_multiproc_dir()
             self.metrics_collector = MetricsCollector({
-                "model_name": "undefined",
-                "engine_type": "undefined"
+                "model_name": self.model,
+                "deployment": deployment_name,
+                "engine_type": "trtllm"
             })
             max_perf_metrics = self.llm.args.perf_metrics_max_requests
             if max_perf_metrics > 0:
@@ -254,6 +272,8 @@ class OpenAIServer:
         self.app.add_api_route("/health", self.health, methods=["GET"])
         self.app.add_api_route("/health_generate", self.health_generate, methods=["GET"])
         self.app.add_api_route("/version", self.version, methods=["GET"])
+        self.app.add_api_route("/metrics", self.metrics, methods=["GET"])
+        self.app.add_api_route("/metrics/", self.metrics, methods=["GET"])
         self.app.add_api_route("/v1/models", self.get_model, methods=["GET"])
         # TODO: the metrics endpoint only reports iteration stats, not the runtime stats for now
         self.app.add_api_route("/metrics", self.get_iteration_stats, methods=["GET"])
@@ -367,6 +387,115 @@ class OpenAIServer:
             logger.error(f"Health generate check encountered exception: {e}")
             return Response(status_code=500, content=f"Generation health check failed: {str(e)}")
 
+    async def metrics(self) -> Response:
+        try:
+            from prometheus_client import (REGISTRY, CollectorRegistry, 
+                                          generate_latest, multiprocess)
+            from tensorrt_llm.serve.prometheus_metrics import (
+                REQUEST_STARTED_TOTAL,
+                REQUEST_COMPLETED_TOTAL,
+                REQUEST_CANCELLED_TOTAL,
+                REQUEST_FAILED_TOTAL,
+                NUM_REQUESTS_WAITING,
+            )
+            from tensorrt_llm._torch.pyexecutor.prometheus_metrics import (
+                NUM_REQUESTS_RUNNING,
+                NUM_REQUESTS_SWAPPED,
+                PROMPT_TOKENS_TOTAL,
+                GENERATION_TOKENS_TOTAL,
+            )
+            
+            # Create a registry for multiprocess mode
+            registry = CollectorRegistry()
+            try:
+                multiprocess.MultiProcessCollector(registry)
+            except Exception:
+                # If multiprocess mode is not set up, use default registry
+                registry = REGISTRY
+            # Calculate derived metrics
+            all_requests_done = (
+                REQUEST_COMPLETED_TOTAL._value.get() +
+                REQUEST_CANCELLED_TOTAL._value.get() +
+                REQUEST_FAILED_TOTAL._value.get()
+            )
+            
+            # If no requests are running, zero out the running gauge
+            if REQUEST_STARTED_TOTAL._value.get() == all_requests_done:
+                NUM_REQUESTS_RUNNING.set(0)
+
+            # Calculate number of requests waiting in queue
+            # (started but not yet running or completed)
+            num_waiting = max(0, REQUEST_STARTED_TOTAL._value.get() - (
+                NUM_REQUESTS_RUNNING._value.get() + all_requests_done))
+            NUM_REQUESTS_WAITING.set(num_waiting)
+
+            # Generate Prometheus format output
+            metrics_output = generate_latest(registry).decode('utf-8')
+            
+            # Add iteration stats if available
+            await self.get_iteration_stats()
+            if "kvCacheStats" in self.last_iteration_stat:
+                kv_cache_metrics = self._format_kv_cache_stats(self.last_iteration_stat["kvCacheStats"])
+                metrics_output += kv_cache_metrics
+            
+            return Response(status_code=200, content=metrics_output, media_type="text/plain")
+        except Exception as e:
+            logger.error(f"Error generating metrics: {e}")
+            import traceback
+            traceback.print_exc()
+            return Response(status_code=500, content=f"Error generating metrics: {str(e)}")
+    
+    def _format_kv_cache_stats(self, kv_stats: dict) -> str:
+        """Format KV cache stats in Prometheus format."""
+        result = []
+        for key, value in kv_stats.items():
+            metric_name = f"kv_cache_{key}"
+            result.append(f'{metric_name}{{model_name="{self.model}"}} {value}')
+        return '\n'.join(result) + '\n'
+"""
+        global prom_metrics_file
+        bufs = None
+        try:
+            if prom_metrics_file is None:
+                prom_metrics_file = os.open(PROM_METRICS_FILENAME,
+                                            os.O_RDWR|os.O_CREAT|os.O_TRUNC)
+            bufs = os.pread(prom_metrics_file, 65536, 0).split(b'\0', 1)
+            if len(bufs) >= 2:
+                keybuf, valbuf = bufs
+                key_list = json.loads(keybuf.decode('UTF-8'))
+                value_list = array.array('d')
+                value_list.frombytes(valbuf)
+                for key, value in zip(key_list, value_list):
+                    prom_metrics[key] = value
+        except:
+            print(bufs)
+            traceback.print_exc()
+
+        all_requests_done = (
+                prom_metrics["request_completed_total"] +
+                prom_metrics["request_cancelled_total"] +
+                prom_metrics["request_failed_total"])
+
+        # NOTE: metrics do not update if the other thread is not running any requests.
+        # Make sure to zero out running and waiting in this case.
+        if prom_metrics["request_started_total"] == all_requests_done:
+            prom_metrics["num_requests_running"] = 0
+
+        # Detect number of requests not being processed by the TensorRT-LLM engine.
+        prom_metrics["num_requests_waiting"] = max(0, prom_metrics["request_started_total"] - (
+                prom_metrics["num_requests_running"] + all_requests_done))
+
+        resp = ''
+        for metric_key, metric_val in prom_metrics.items():
+            separator = ',' if '{' in metric_key else '{'
+            resp += f'fw:{metric_key}{separator}model_name="{self.model}"}} {float(metric_val)}\n'
+        await self.get_iteration_stats()
+        if "kvCacheStats" in self.last_iteration_stat:
+            resp += self.format_kv_cache_stats(self.last_iteration_stat["kvCacheStats"])
+
+        return Response(status_code=200, content=resp)
+"""
+
     async def version(self) -> JSONResponse:
         ver = {"version": VERSION}
         return JSONResponse(content=ver)
@@ -378,6 +507,7 @@ class OpenAIServer:
     async def get_iteration_stats(self) -> JSONResponse:
         stats = []
         async for stat in self.llm.get_stats_async(2):
+            self.last_iteration_stat = stat
             stats.append(stat)
         return JSONResponse(content=stats)
 
@@ -475,7 +605,7 @@ class OpenAIServer:
                     self.perf_metrics.append(item)
 
     async def openai_chat(self, request: ChatCompletionRequest, raw_request: Request) -> Response:
-
+        did_complete = False
         def get_role() -> str:
             if request.add_generation_prompt:
                 role = "assistant"
@@ -485,6 +615,7 @@ class OpenAIServer:
 
         async def chat_stream_generator(
                 promise: RequestOutput, postproc_params: PostprocParams) -> AsyncGenerator[str, None]:
+            nonlocal did_complete
             try:
                 if not self.postproc_worker_enabled:
                     post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
@@ -493,17 +624,38 @@ class OpenAIServer:
                 pp_results = first_response.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(first_response, args)
                 if pp_results is not None:
                     for pp_res in pp_results:
-                        yield pp_res
+                        for choice in pp_res.choices:
+                            if choice.finish_reason is not None:
+                                did_complete = True
+                                if self.prometheus_enabled:
+                                    self.prom_request_completed.inc()
+                                    self.prom_request_success.labels(finished_reason=choice.finish_reason).inc()
+
+                            pp_res_json = pp_res.model_dump_json(exclude_unset=True)
+                            yield f"data: {pp_res_json}\n\n"
                 # Making sure we can handling the situation where there is only one response
                 res = first_response
                 async for res in promise:
                     pp_results = res.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(res, args)
                     for pp_res in pp_results:
-                        yield pp_res
+                        for choice in pp_res.choices:
+                            if choice.finish_reason is not None:
+                                did_complete = True
+                                if self.prometheus_enabled:
+                                    self.prom_request_completed.inc()
+                                    self.prom_request_success.labels(finished_reason=choice.finish_reason).inc()
+
+                        pp_res_json = pp_res.model_dump_json(exclude_unset=True)
+                        yield f"data: {pp_res_json}\n\n"
                 yield "data: [DONE]\n\n"
                 await self._extract_metrics(res, raw_request)
                 nvtx_mark("generation ends")
-            except:
+
+            finally:
+                if not did_complete:
+                    if self.prometheus_enabled:
+                        self.prom_request_cancelled.inc()
+                    promise.abort()
                 logger.error(traceback.format_exc())
                 raise
 
@@ -516,12 +668,22 @@ class OpenAIServer:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
                 chat_response = post_processor(promise, args)
 
+            for choice in chat_response.choices:
+                if choice.finish_reason is not None:
+                    if self.prometheus_enabled:
+                        self.prom_request_completed.inc()
+                        self.prom_request_success.labels(finished_reason=choice.finish_reason).inc()
+
             # Add prompt_tokens_ids to the response
             if disaggregated_params and disaggregated_params.request_type and disaggregated_params.request_type == "context_only":
                 chat_response.prompt_token_ids = promise.prompt_token_ids
             raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds()
             await self._extract_metrics(promise, raw_request)
             return chat_response
+
+        if self.prometheus_enabled:
+            self.prom_request_started.inc()
+        promise: Optional[RequestOutput] = None
 
         try:
             body = await raw_request.json()
@@ -605,15 +767,22 @@ class OpenAIServer:
                 return JSONResponse(content=response.model_dump())
 
         except asyncio.CancelledError:
+
+            if self.prometheus_enabled:
+                self.prom_request_cancelled.inc()
             if promise is not None:
                 promise.abort()
             return self.create_error_response("cancelled")
         except CppExecutorError:
             logger.error(traceback.format_exc())
+            if self.prometheus_enabled:
+                self.prom_request_failed.inc()
             # If internal executor error is raised, shutdown the server
             signal.raise_signal(signal.SIGINT)
         except Exception as e:
             logger.error(traceback.format_exc())
+            if self.prometheus_enabled:
+                self.prom_request_failed.inc()
             return self.create_error_response(str(e))
 
     async def openai_mm_encoder(self, request: ChatCompletionRequest, raw_request: Request) -> Response:
@@ -710,6 +879,11 @@ class OpenAIServer:
                 pp_result.prompt_token_ids = response.prompt_token_ids
             raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds()
             await self._extract_metrics(response, raw_request)
+            for choice in pp_result.choices:
+                if choice.finish_reason is not None:
+                    if self.prometheus_enabled:
+                        self.prom_request_completed.inc()
+                        self.prom_request_success.labels(finished_reason=choice.finish_reason).inc()
             return pp_result
 
         def merge_completion_responses(responses: List[CompletionResponse]) -> CompletionResponse:
@@ -743,6 +917,7 @@ class OpenAIServer:
             return merged_rsp
 
         async def completion_generator(promise: RequestOutput, params: Optional[PostprocParams]):
+            did_complete = False
             try:
                 async for output in promise:
                     if not self.postproc_worker_enabled:
@@ -750,14 +925,24 @@ class OpenAIServer:
                         pp_result = post_processor(output, args)
                     else:
                         pp_result = output.outputs[0]._postprocess_result
+
+                    await self._extract_metrics(output, raw_request)
                     if pp_result is not None:
                         for pp_res in pp_result:
-                            yield pp_res
-                await self._extract_metrics(output, raw_request)
-            except:
-                logger.error(traceback.format_exc())
-                raise
-
+                            for choice in pp_res.choices:
+                                if choice.finish_reason is not None:
+                                    did_complete = True
+                                    if self.prometheus_enabled:
+                                        self.prom_request_completed.inc()
+                                        self.prom_request_success.labels(finished_reason=choice.finish_reason).inc()
+                            pp_res_json = pp_res.model_dump_json(exclude_unset=True)
+                            yield f"data: {pp_res_json}\n\n"
+            finally:
+                print(f"Completion generator finally {did_complete=}")
+                if not did_complete:
+                    if self.prometheus_enabled:
+                        self.prom_request_cancelled.inc()
+                    promise.abort()
 
         async def merge_generators(generators: List[AsyncIterator[Any]]):
             result_queue = asyncio.Queue()
@@ -787,7 +972,8 @@ class OpenAIServer:
             async for output in generator:
                 yield output
             yield "data: [DONE]\n\n"
-
+        if self.prometheus_enabled:
+            self.prom_request_started.inc()
         try:
             if isinstance(request.prompt, str) or \
                 (isinstance(request.prompt, list) and isinstance(request.prompt[0], int)):
@@ -802,6 +988,7 @@ class OpenAIServer:
             sampling_params = request.to_sampling_params(
                 vocab_size=self.tokenizer.tokenizer.vocab_size)
             # TODO: better way to enable metrics
+            import os
             if len(os.getenv("TRTLLM_KVCACHE_TIME_OUTPUT_PATH", "")) > 0:
                 sampling_params.return_perf_metrics = True
             disaggregated_params = to_llm_disaggregated_params(request.disaggregated_params)
@@ -858,9 +1045,13 @@ class OpenAIServer:
             return self.create_error_response("cancelled")
         except CppExecutorError:
             logger.error(traceback.format_exc())
+            if self.prometheus_enabled:
+                self.prom_request_failed.inc()
             # If internal executor error is raised, shutdown the server
             signal.raise_signal(signal.SIGINT)
         except Exception as e:
+            if self.prometheus_enabled:
+                self.prom_request_failed.inc()
             logger.error(traceback.format_exc())
             return self.create_error_response(str(e))
 
@@ -878,6 +1069,16 @@ class OpenAIServer:
             else:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
                 chat_response = post_processor(promise, args)
+
+            response = await promise
+            raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds()
+            await self._extract_metrics(response, raw_request)
+
+            for choice in chat_response.choices:
+                if choice.finish_reason is not None:
+                    if self.prometheus_enabled:
+                        self.prom_request_completed.inc()
+                        self.prom_request_success.labels(finished_reason=choice.finish_reason).inc()
 
             return chat_response
 
@@ -1047,10 +1248,14 @@ class OpenAIServer:
             return self.create_error_response("cancelled")
         except CppExecutorError:
             logger.error(traceback.format_exc())
+            if self.prometheus_enabled:
+                self.prom_request_failed.inc()
             # If internal executor error is raised, shutdown the server
             signal.raise_signal(signal.SIGINT)
         except Exception as e:
             logger.error(traceback.format_exc())
+            if self.prometheus_enabled:
+                self.prom_request_failed.inc()
             return self.create_error_response(str(e))
 
         return JSONResponse(content={"detail": "None"})

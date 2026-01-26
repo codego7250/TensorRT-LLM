@@ -1610,7 +1610,9 @@ def handle_streaming_response(tools: List[ChatCompletionToolsParam],
 
             if should_stop:
                 end_streaming(res)
-                result.abort()
+                abort_fn = getattr(result, "abort", None)
+                if callable(abort_fn):
+                    abort_fn()
 
         return res
 
