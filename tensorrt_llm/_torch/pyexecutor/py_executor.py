@@ -659,6 +659,31 @@ class PyExecutor:
                 except:
                     traceback.print_exc()
 
+                try:
+                    from .prometheus_metrics import (
+                        NUM_REQUESTS_RUNNING,
+                        NUM_REQUESTS_SWAPPED,
+                        PROMPT_TOKENS_TOTAL,
+                        GENERATION_TOKENS_TOTAL,
+                        ITERATION_TOKENS_TOTAL,
+                        TIME_PER_OUTPUT_TOKEN_SECONDS,
+                        REQUEST_PROMPT_TOKENS_TOTAL,
+                        REQUEST_GENERATION_TOKENS_TOTAL,
+                    )
+                    iter_states = self.model_engine.iter_states
+                    NUM_REQUESTS_RUNNING.set(prom_metrics["num_requests_running"])
+                    NUM_REQUESTS_SWAPPED.set(prom_metrics["num_requests_swapped"])
+                    
+                    iteration_tokens = iter_states['num_ctx_tokens'] + iter_states['num_generation_tokens']
+                    ITERATION_TOKENS_TOTAL.inc(iteration_tokens)
+                    TIME_PER_OUTPUT_TOKEN_SECONDS.observe(start_time - last_start_time)
+                    PROMPT_TOKENS_TOTAL.inc(iter_states['num_ctx_tokens'])
+                    REQUEST_PROMPT_TOKENS_TOTAL.observe(iter_states['num_ctx_tokens'])
+                    GENERATION_TOKENS_TOTAL.inc(iter_states['num_generation_tokens'])
+                    REQUEST_GENERATION_TOKENS_TOTAL.observe(iter_states['num_generation_tokens'])
+                except Exception:
+                    pass
+
         try:
             yield profile_step
         finally:
