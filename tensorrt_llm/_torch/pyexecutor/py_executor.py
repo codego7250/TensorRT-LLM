@@ -660,30 +660,29 @@ class PyExecutor:
                     traceback.print_exc()
 
                 try:
-                    from .prometheus_metrics import (
-                        NUM_REQUESTS_RUNNING,
-                        NUM_REQUESTS_SWAPPED,
-                        PROMPT_TOKENS_TOTAL,
-                        GENERATION_TOKENS_TOTAL,
-                        ITERATION_TOKENS_TOTAL,
-                        TIME_PER_OUTPUT_TOKEN_SECONDS,
-                        REQUEST_PROMPT_TOKENS_TOTAL,
-                        REQUEST_GENERATION_TOKENS_TOTAL,
-                    )
+                    from .prometheus_metrics import (prometheus_metrics, write_metrics_to_file)
                     iter_states = self.model_engine.iter_states
-                    NUM_REQUESTS_RUNNING.set(prom_metrics["num_requests_running"])
-                    NUM_REQUESTS_SWAPPED.set(prom_metrics["num_requests_swapped"])
-                    
-                    iteration_tokens = iter_states['num_ctx_tokens'] + iter_states['num_generation_tokens']
-                    ITERATION_TOKENS_TOTAL.inc(iteration_tokens)
-                    TIME_PER_OUTPUT_TOKEN_SECONDS.observe(start_time - last_start_time)
-                    PROMPT_TOKENS_TOTAL.inc(iter_states['num_ctx_tokens'])
-                    REQUEST_PROMPT_TOKENS_TOTAL.observe(iter_states['num_ctx_tokens'])
-                    GENERATION_TOKENS_TOTAL.inc(iter_states['num_generation_tokens'])
-                    REQUEST_GENERATION_TOKENS_TOTAL.observe(iter_states['num_generation_tokens'])
+                    if iter_states:
+                        num_ctx_requests = iter_states.get('num_ctx_requests', 0)
+                        num_ctx_tokens = iter_states.get('num_ctx_tokens', 0)
+                        num_generation_tokens = iter_states.get('num_generation_tokens', 0)
+
+                        total_running = num_ctx_requests + num_generation_tokens / (1 + self.model_engine.max_draft_len)
+                        prometheus_metrics["num_requests_running"] = prom_metrics["num_requests_running"]
+                        prometheus_metrics["num_requests_swapped"] = prom_metrics["num_requests_swapped"]
+                        prometheus_metrics["iteration_tokens_total_sum"] = prom_metrics["iteration_tokens_total_sum"]
+                        prometheus_metrics["iteration_tokens_total_count"] = prom_metrics["iteration_tokens_total_count"]
+                        prometheus_metrics["time_per_output_token_seconds_sum"] =  prom_metrics["time_per_output_token_seconds_sum"] 
+                        prometheus_metrics["time_per_output_token_seconds_count"] = prom_metrics["time_per_output_token_seconds_count"]
+                        prometheus_metrics["prompt_tokens_total"] = prom_metrics["prompt_tokens_total"]
+                        prometheus_metrics["request_prompt_tokens_total_sum"] = prom_metrics["request_prompt_tokens_total_sum"]
+                        prometheus_metrics["request_prompt_tokens_total_count"] = prom_metrics["request_prompt_tokens_total_count"]
+                        prometheus_metrics["generation_tokens_total"] = prom_metrics["request_generation_tokens_total_sum"]
+                        prometheus_metrics["request_generation_tokens_total_sum"] = prom_metrics["request_generation_tokens_total_sum"] 
+                        prometheus_metrics["request_generation_tokens_total_count"] = prom_metrics["request_generation_tokens_total_count"]
+                        write_metrics_to_file()
                 except Exception:
                     pass
-
         try:
             yield profile_step
         finally:

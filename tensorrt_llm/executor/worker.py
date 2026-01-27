@@ -242,6 +242,16 @@ def worker_main(
     llm_args: Optional[BaseLlmArgs] = None,
 ) -> None:
 
+    # Ensure PROMETHEUS_MULTIPROC_DIR is set before prometheus_client is imported
+    # This enables multiprocess mode for prometheus metrics
+    prometheus_dir = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
+    if prometheus_dir and os.path.isdir(prometheus_dir):
+        # Force prometheus_client to use multiprocess mode by importing it now
+        try:
+            pass
+        except ImportError:
+            pass
+
     mpi_comm().barrier()
 
     if llm_args is not None and llm_args.env_overrides:
