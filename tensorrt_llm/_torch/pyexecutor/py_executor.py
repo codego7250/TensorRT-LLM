@@ -637,7 +637,7 @@ class PyExecutor:
             if last_start_time is not None and self.dist.rank == 0:
                 try:
                     from .prometheus_metrics import (prom_metrics, write_metrics_to_file)
-                                        iter_states = self.model_engine.iter_states
+                    iter_states = self.model_engine.iter_states
                     # Skip if iter_states not yet populated (first iteration)
                     if iter_states:
                         num_ctx_requests = iter_states.get('num_ctx_requests', 0)
