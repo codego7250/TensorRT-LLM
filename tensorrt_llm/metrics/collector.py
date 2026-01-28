@@ -11,10 +11,19 @@ class MetricsCollector:
     labelname_finish_reason = "finished_reason"
 
     def __init__(self, labels: Dict[str, str]) -> None:
-        from prometheus_client import Counter, Histogram
+        # Lazy import to avoid circular dependency
+        # (metrics -> serve -> executor -> metrics)
+        from tensorrt_llm.serve.prometheus_metrics import (
+            REQUEST_SUCCESS_TOTAL,
+            E2E_REQUEST_LATENCY_SECONDS,
+            TIME_TO_FIRST_TOKEN_SECONDS,
+            TIME_PER_OUTPUT_TOKEN_SECONDS,
+            REQUEST_QUEUE_TIME_SECONDS,
+            SERVER_TIME_TO_FIRST_TOKEN_SECONDS,
+        )
+
         self.last_log_time = time.time()
         self.labels = labels
-        self.metric_prefix = "trtllm_"
 
         self.finish_reason_label = {
             MetricsCollector.labelname_finish_reason: "unknown"
@@ -24,48 +33,13 @@ class MetricsCollector:
             **self.finish_reason_label
         }
 
-        self.counter_request_success = Counter(
-            name=self.metric_prefix + "request_success_total",
-            documentation="Count of successfully processed requests.",
-            labelnames=self.labels_with_finished_reason.keys())
-
-        self.histogram_e2e_time_request = Histogram(
-            name=self.metric_prefix + "e2e_request_latency_seconds",
-            documentation="Histogram of end to end request latency in seconds.",
-            buckets=[
-                0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0,
-                40.0, 50.0, 60.0, 120.0, 240.0, 480.0, 960.0, 1920.0, 7680.0
-            ],
-            labelnames=self.labels.keys())
-
-        self.histogram_time_to_first_token = Histogram(
-            name=self.metric_prefix + "time_to_first_token_seconds",
-            documentation="Histogram of time to first token in seconds.",
-            buckets=[
-                0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.25, 0.5,
-                0.75, 1.0, 2.5, 5.0, 7.5, 10.0, 20.0, 40.0, 80.0, 160.0, 640.0,
-                2560.0
-            ],
-            labelnames=self.labels.keys())
-
-        self.histogram_time_per_output_token = Histogram(
-            name=self.metric_prefix + "time_per_output_token_seconds",
-            documentation="Histogram of time per output token in seconds.",
-            buckets=[
-                0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75,
-                1.0, 2.5, 5.0, 7.5, 10.0, 20.0, 40.0, 80.0
-            ],
-            labelnames=self.labels.keys())
-
-        self.histogram_queue_time_request = Histogram(
-            name=self.metric_prefix + "request_queue_time_seconds",
-            documentation=
-            "Histogram of time spent in WAITING phase for request.",
-            buckets=[
-                0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0,
-                40.0, 50.0, 60.0, 120.0, 240.0, 480.0, 960.0, 1920.0, 7680.0
-            ],
-            labelnames=self.labels.keys())
+        # Use centralized metric definitions from prometheus_metrics
+        self.counter_request_success = REQUEST_SUCCESS_TOTAL
+        self.histogram_e2e_time_request = E2E_REQUEST_LATENCY_SECONDS
+        self.histogram_time_to_first_token = TIME_TO_FIRST_TOKEN_SECONDS
+        self.histogram_time_per_output_token = TIME_PER_OUTPUT_TOKEN_SECONDS
+        self.histogram_queue_time_request = REQUEST_QUEUE_TIME_SECONDS
+        self.histogram_server_time_to_first_token = SERVER_TIME_TO_FIRST_TOKEN_SECONDS
 
     def _label_merge(self, labels: Dict[str, str]) -> Dict[str, str]:
         if labels is None or len(labels) == 0:
@@ -96,6 +70,10 @@ class MetricsCollector:
         if request_queue_time := data.get(MetricNames.REQUEST_QUEUE_TIME, 0):
             self._log_histogram(self.histogram_queue_time_request,
                                 request_queue_time)
+        # Server-side TTFT (from HTTP request arrival to first token sent)
+        if server_ttft := data.get("server_ttft", 0):
+            self._log_histogram(self.histogram_server_time_to_first_token,
+                                server_ttft)
         self.last_log_time = time.time()
 
     def log_metrics_dict(self, metrics_dict: dict[str, float]) -> None:

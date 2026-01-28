@@ -29,6 +29,17 @@ prometheus_metrics = {
     "generation_tokens_total": 0.0,
     "request_generation_tokens_total_sum": 0.0,
     "request_generation_tokens_total_count": 0.0,
+    # Request latency metrics (sum and count for computing histograms)
+    "e2e_request_latency_seconds_sum": 0.0,
+    "e2e_request_latency_seconds_count": 0.0,
+    "time_to_first_token_seconds_sum": 0.0,
+    "time_to_first_token_seconds_count": 0.0,
+    "request_queue_time_seconds_sum": 0.0,
+    "request_queue_time_seconds_count": 0.0,
+    "server_time_to_first_token_seconds_sum": 0.0,
+    "server_time_to_first_token_seconds_count": 0.0,
+    # Request success counter
+    "request_success_total": 0.0,
 }
 
 
