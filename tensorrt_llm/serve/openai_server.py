@@ -150,9 +150,15 @@ class OpenAIServer:
         self.perf_metrics_lock = None
         # The steady clock offset (in seconds) between this server and the disagg server
         self.disagg_server_steady_clock_offset = 0
+
+        import os
+        deployment_name = os.getenv("FIREWORKS_DEPLOYMENT_NAME", "undefined")
         if self.llm.args.return_perf_metrics:
-            import os
-            deployment_name = os.getenv("FIREWORKS_DEPLOYMENT_NAME", "undefined")
+            self._prom_labels = {
+                "model_name": self.model,
+                "deployment": deployment_name,
+                "engine_type": "trtllm"
+            }
             set_prometheus_multiproc_dir()
             self.metrics_collector = MetricsCollector({
                 "model_name": self.model,
@@ -389,45 +395,42 @@ class OpenAIServer:
             return Response(status_code=500, content=f"Generation health check failed: {str(e)}")
 
     async def metrics(self) -> Response:
-        global prom_metrics_file
-        bufs = None
         try:
-            if prom_metrics_file is None:
-                prom_metrics_file = os.open(PROM_METRICS_FILENAME,
-                                            os.O_RDWR|os.O_CREAT|os.O_TRUNC)
-            bufs = os.pread(prom_metrics_file, 65536, 0).split(b'\0', 1)
-            if len(bufs) >= 2:
-                keybuf, valbuf = bufs
-                key_list = json.loads(keybuf.decode('UTF-8'))
-                value_list = array.array('d')
-                value_list.frombytes(valbuf)
-                for key, value in zip(key_list, value_list):
-                    prom_metrics[key] = value
-        except:
-            print(bufs)
+            from prometheus_client import REGISTRY, generate_latest
+            from tensorrt_llm._torch.pyexecutor.prometheus_metrics import read_metrics_from_file
+
+            # Read executor metrics from shared file and update prometheus metrics
+            executor_metrics = read_metrics_from_file()
+            prom_metrics = executor_metrics
+            if prom_metrics:
+                all_requests_done = (
+                        prom_metrics["request_completed_total"] +
+                        prom_metrics["request_cancelled_total"] +
+                        prom_metrics["request_failed_total"])
+                # NOTE: metrics do not update if the other thread is not running any requests.
+                # Make sure to zero out running and waiting in this case.
+                if prom_metrics["request_started_total"] == all_requests_done:
+                    prom_metrics["num_requests_running"] = 0
+
+                # Detect number of requests not being processed by the TensorRT-LLM engine.
+                prom_metrics["num_requests_waiting"] = max(0, prom_metrics["request_started_total"] - (
+                        prom_metrics["num_requests_running"] + all_requests_done))
+
+                resp = ''
+                for metric_key, metric_val in prom_metrics.items():
+                    separator = ',' if '{' in metric_key else '{'
+                    resp += f'fw:{metric_key}{separator}model_name="{self.model}"}} {float(metric_val)}\n'
+                await self.get_iteration_stats()
+                if "kvCacheStats" in self.last_iteration_stat:
+                    resp += self.format_kv_cache_stats(self.last_iteration_stat["kvCacheStats"])
+
+                return Response(status_code=200, content=resp)
+        except Exception as e:
+            logger.error(f"Error generating metrics: {e}")
+            import traceback
             traceback.print_exc()
-        all_requests_done = (
-                prom_metrics["request_completed_total"] +
-                prom_metrics["request_cancelled_total"] +
-                prom_metrics["request_failed_total"])
-        # NOTE: metrics do not update if the other thread is not running any requests.
-        # Make sure to zero out running and waiting in this case.
-        if prom_metrics["request_started_total"] == all_requests_done:
-            prom_metrics["num_requests_running"] = 0
-
-        # Detect number of requests not being processed by the TensorRT-LLM engine.
-        prom_metrics["num_requests_waiting"] = max(0, prom_metrics["request_started_total"] - (
-                prom_metrics["num_requests_running"] + all_requests_done))
-
-        resp = ''
-        for metric_key, metric_val in prom_metrics.items():
-            separator = ',' if '{' in metric_key else '{'
-            resp += f'fw:{metric_key}{separator}model_name="{self.model}"}} {float(metric_val)}\n'
-        await self.get_iteration_stats()
-        if "kvCacheStats" in self.last_iteration_stat:
-            resp += self.format_kv_cache_stats(self.last_iteration_stat["kvCacheStats"])
-
-        return Response(status_code=200, content=resp)
+            return Response(status_code=500,
+                            content=f"Error generating metrics: {str(e)}")
 
     async def version(self) -> JSONResponse:
         ver = {"version": VERSION}
