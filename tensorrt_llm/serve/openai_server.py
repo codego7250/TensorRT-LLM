@@ -535,7 +535,7 @@ class OpenAIServer:
             pass
         return JSONResponse(content=events)
 
-    async def _extract_metrics(self, res: RequestOutput, raw_request: Request):
+    async def _extract_metrics(self, res: RequestOutput, raw_request: Request, finish_reason: Optional[str] = None):
         """
         Extract and log metrics from a completed request.
         Called for both streaming and non-streaming responses when request completes.
@@ -545,14 +545,25 @@ class OpenAIServer:
         2. Adds server-side timing metrics if available
         3. Logs to MetricsCollector for Prometheus export
         4. Stores perf_metrics for the /perf_metrics endpoint if enabled
+        
+        Args:
+            res: The RequestOutput from the generation
+            raw_request: The FastAPI Request object
+            finish_reason: Optional finish reason (for streaming mode where it's captured separately)
         """
-        if not res.finished:
+        # For streaming mode, we may not have res.finished=True but still want to log metrics
+        # if we have a finish_reason from the streamed responses
+        if not res.finished and finish_reason is None:
             return
         
         try:
             # Collect and log metrics to MetricsCollector
             if self.metrics_collector:
                 metrics_data = dict(res.metrics_dict) if res.metrics_dict else {}
+                
+                # For streaming mode, ensure finish_reason is set if provided
+                if finish_reason and "finished_reason" not in metrics_data:
+                    metrics_data["finished_reason"] = finish_reason
                 
                 # Add server-side TTFT if both timestamps are available
                 if raw_request:
@@ -597,17 +608,20 @@ class OpenAIServer:
         async def chat_stream_generator(
                 promise: RequestOutput, postproc_params: PostprocParams) -> AsyncGenerator[str, None]:
             nonlocal did_complete
+            stream_finish_reason = None  # Track finish_reason for metrics
             try:
                 if not self.postproc_worker_enabled:
                     post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
                 first_response = await anext(promise)
                 raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds()
                 pp_results = first_response.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(first_response, args)
+
                 if pp_results is not None:
                     for pp_res in pp_results:
                         for choice in pp_res.choices:
                             if choice.finish_reason is not None:
                                 did_complete = True
+                                stream_finish_reason = choice.finish_reason
                                 prom_metrics["request_completed_total"] += 1
                                 prom_metrics[f"request_success_total{{finished_reason=\"{choice.finish_reason}\""] += 1
 
@@ -621,13 +635,14 @@ class OpenAIServer:
                         for choice in pp_res.choices:
                             if choice.finish_reason is not None:
                                 did_complete = True
+                                stream_finish_reason = choice.finish_reason
                                 prom_metrics["request_completed_total"] += 1
                                 prom_metrics[f"request_success_total{{finished_reason=\"{choice.finish_reason}\""] += 1
 
                         pp_res_json = pp_res.model_dump_json(exclude_unset=True)
                         yield f"data: {pp_res_json}\n\n"
                 yield f"data: [DONE]\n\n"
-                await self._extract_metrics(res, raw_request)
+                await self._extract_metrics(res, raw_request, finish_reason=stream_finish_reason)
                 nvtx_mark("generation ends")
             finally:
                 if not did_complete:
@@ -887,8 +902,11 @@ class OpenAIServer:
 
         async def completion_generator(promise: RequestOutput, params: Optional[PostprocParams]):
             did_complete = False
+            stream_finish_reason = None  # Track finish_reason for metrics
+            final_output = None  # Track final output for metrics
             try:
                 async for output in promise:
+                    final_output = output
                     if not self.postproc_worker_enabled:
                         post_processor, args = params.post_processor, params.postproc_args
                         pp_result = post_processor(output, args)
@@ -899,11 +917,14 @@ class OpenAIServer:
                             for choice in pp_res.choices:
                                 if choice.finish_reason is not None:
                                     did_complete = True
+                                    stream_finish_reason = choice.finish_reason
                                     prom_metrics["request_completed_total"] += 1
                                     prom_metrics[f"request_success_total{{finished_reason=\"{choice.finish_reason}\""] += 1
                             pp_res_json = pp_res.model_dump_json(exclude_unset=True)
                             yield f"data: {pp_res_json}\n\n"
-                    await self._extract_metrics(output, raw_request)
+                # Extract metrics only once after stream completes
+                if final_output is not None:
+                    await self._extract_metrics(final_output, raw_request, finish_reason=stream_finish_reason)
             finally:
                 print(f"Completion generator finally {did_complete=}")
                 if not did_complete:
@@ -1047,12 +1068,23 @@ class OpenAIServer:
             if not self.postproc_worker_enabled:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
 
+            res = None
+            stream_finish_reason = None  # Track finish_reason for metrics
             async for res in promise:
                 pp_results = res.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(res, args)
                 if pp_results is None:
                     continue 
                 for pp_res in pp_results:
+                    # Capture finish_reason for metrics if available
+                    if hasattr(pp_res, 'choices'):
+                        for choice in pp_res.choices:
+                            if hasattr(choice, 'finish_reason') and choice.finish_reason is not None:
+                                stream_finish_reason = choice.finish_reason
                     yield pp_res
+
+            # Extract metrics from the final response
+            if res is not None:
+                await self._extract_metrics(res, raw_request, finish_reason=stream_finish_reason)
 
             yield "data: [DONE]\n\n"
 
@@ -1136,7 +1168,11 @@ class OpenAIServer:
     async def openai_responses(self, request: ResponsesRequest, raw_request: Request) -> Response:
         async def create_stream_response(generator, request: ResponsesRequest, sampling_params) -> AsyncGenerator[str, None]:
             async def metrics_callback(res):
-                await self._extract_metrics(res, raw_request)
+                # Extract finish_reason from the response output
+                finish_reason = None
+                if res and res.outputs and len(res.outputs) > 0:
+                    finish_reason = res.outputs[0].finish_reason
+                await self._extract_metrics(res, raw_request, finish_reason=finish_reason)
 
             async for event_data in responses_api_process_streaming_events(
                 request=request,
