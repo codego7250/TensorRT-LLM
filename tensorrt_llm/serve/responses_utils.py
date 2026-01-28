@@ -1660,6 +1660,7 @@ async def process_streaming_events(
     create_time: Optional[int] = None,
     reasoning_parser: Optional[str] = None,
     tool_parser: Optional[str] = None,
+    on_complete_callback=None,
 ) -> AsyncGenerator[str, None]:
     sequence_number = 0
     response_creation_time = create_time if create_time is not None else int(
@@ -1731,6 +1732,10 @@ async def process_streaming_events(
 
         for event in event_generator:
             yield _send_event(event)
+
+    # Call the completion callback with the final response for metrics collection
+    if on_complete_callback is not None and final_res is not None:
+        await on_complete_callback(final_res)
 
     final_response = await create_response(
         generator=generator,

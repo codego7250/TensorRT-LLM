@@ -1090,6 +1090,9 @@ class OpenAIServer:
 
     async def openai_responses(self, request: ResponsesRequest, raw_request: Request) -> Response:
         async def create_stream_response(generator, request: ResponsesRequest, sampling_params) -> AsyncGenerator[str, None]:
+            async def metrics_callback(res):
+                await self._extract_metrics(res, raw_request)
+
             async for event_data in responses_api_process_streaming_events(
                 request=request,
                 sampling_params=sampling_params,
@@ -1099,7 +1102,8 @@ class OpenAIServer:
                 use_harmony=self.use_harmony,
                 reasoning_parser=self.llm.args.reasoning_parser,
                 tool_parser=self.tool_parser,
-                enable_store=self.enable_store
+                enable_store=self.enable_store,
+                on_complete_callback=metrics_callback
             ):
                 yield event_data
 
