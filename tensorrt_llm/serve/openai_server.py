@@ -644,12 +644,13 @@ class OpenAIServer:
                 yield f"data: [DONE]\n\n"
                 await self._extract_metrics(res, raw_request, finish_reason=stream_finish_reason)
                 nvtx_mark("generation ends")
+            except Exception:
+                logger.error(traceback.format_exc())
+                raise
             finally:
                 if not did_complete:
                     prom_metrics["request_cancelled_total"] += 1
                     promise.abort()
-                logger.error(traceback.format_exc())
-                raise
 
         async def create_chat_response(
                 promise: RequestOutput, postproc_params: PostprocParams, disaggregated_params: Optional[LlmDisaggregatedParams] = None) -> ChatCompletionResponse:

@@ -14,4 +14,5 @@
 # limitations under the License.
 #__version__ = "1.2.0rc16"
 #__version__ = "1.2.0rc10"
-__version__ = "1.2.0rc18"
+#__version__ = "1.2.0rc18"
+__version__ = "1.2.0rc19"

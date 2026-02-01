@@ -154,13 +154,19 @@ def apply_tool_parser(args: ChatPostprocArgs, output_index: int, text: str,
 
 
 @nvtx_range_debug("chat_stream_post_processor")
-def chat_stream_post_processor(rsp: GenerationResultBase,
-                               args: ChatPostprocArgs) -> List[str]:
+def chat_stream_post_processor(
+        rsp: GenerationResultBase,
+        args: ChatPostprocArgs) -> List[ChatCompletionStreamResponse]:
+    """Post-process streaming chat completion responses.
+    
+    Returns a list of ChatCompletionStreamResponse objects. The caller is responsible
+    for serializing these to JSON and formatting as SSE events.
+    """
 
-    def yield_first_chat(num_tokens: int,
-                         idx: int,
-                         role: str | None = None,
-                         content: str | None = None):
+    def create_first_chat_chunk(num_tokens: int,
+                                idx: int,
+                                role: str | None = None,
+                                content: str | None = None):
         choice_data = ChatCompletionResponseStreamChoice(index=idx,
                                                          delta=DeltaMessage(
                                                              role=role,
@@ -176,10 +182,9 @@ def chat_stream_post_processor(rsp: GenerationResultBase,
                 prompt_tokens_details=PromptTokensDetails(
                     cached_tokens=rsp.cached_tokens),
             )
-        data = chunk.model_dump_json(exclude_none=True)
-        return data
+        return chunk
 
-    res: List[str] = []
+    res: List[ChatCompletionStreamResponse] = []
     finish_reason_sent = [False] * args.num_choices
     prompt_tokens = args.num_prompt_tokens
     if stream_option := args.stream_options:
@@ -190,12 +195,10 @@ def chat_stream_post_processor(rsp: GenerationResultBase,
         include_continuous_usage = False
     if args.first_iteration:
         for i in range(args.num_choices):
-            res.append(
-                f"data: {yield_first_chat(prompt_tokens, i, role=args.role)} \n\n"
-            )
+            res.append(create_first_chat_chunk(prompt_tokens, i, role=args.role))
             if args.echo and args.last_message_content:
                 res.append(
-                    f"data: {yield_first_chat(prompt_tokens, i, content=args.last_message_content)} \n\n"
+                    create_first_chat_chunk(prompt_tokens, i, content=args.last_message_content)
                 )
         args.first_iteration = False
 
@@ -282,8 +285,7 @@ def chat_stream_post_processor(rsp: GenerationResultBase,
                                     total_tokens=output.length + prompt_tokens,
                                     prompt_tokens_details=PromptTokensDetails(
                                         cached_tokens=rsp.cached_tokens))
-        data = chunk.model_dump_json(exclude_none=True)
-        res.append(f"data: {data}\n\n")
+        res.append(chunk)
 
     if include_usage and rsp._done:
         completion_tokens = sum(output.length for output in rsp.outputs)
@@ -298,8 +300,7 @@ def chat_stream_post_processor(rsp: GenerationResultBase,
         final_usage_chunk = ChatCompletionStreamResponse(choices=[],
                                                          model=args.model,
                                                          usage=final_usage)
-        final_usage_data = final_usage_chunk.model_dump_json()
-        res.append(f"data: {final_usage_data}\n\n")
+        res.append(final_usage_chunk)
     return res
 
 
@@ -402,9 +403,15 @@ class CompletionPostprocArgs(PostprocArgs):
 
 
 @nvtx_range_debug("completion_stream_post_processor")
-def completion_stream_post_processor(rsp: DetokenizedGenerationResultBase,
-                                     args: CompletionPostprocArgs) -> List[str]:
-    res: List[str] = []
+def completion_stream_post_processor(
+        rsp: DetokenizedGenerationResultBase,
+        args: CompletionPostprocArgs) -> List[CompletionStreamResponse]:
+    """Post-process streaming completion responses.
+    
+    Returns a list of CompletionStreamResponse objects. The caller is responsible
+    for serializing these to JSON and formatting as SSE events.
+    """
+    res: List[CompletionStreamResponse] = []
     prompt_tokens = args.num_prompt_tokens
     if stream_option := args.stream_options:
         include_usage = stream_option.include_usage
@@ -434,8 +441,7 @@ def completion_stream_post_processor(rsp: DetokenizedGenerationResultBase,
                                     total_tokens=output.length + prompt_tokens,
                                     prompt_tokens_details=PromptTokensDetails(
                                         cached_tokens=rsp.cached_tokens))
-        data = chunk.model_dump_json(exclude_unset=False)
-        res.append(f"data: {data}\n\n")
+        res.append(chunk)
 
     if include_usage and rsp._done:
         completion_tokens = sum(output.length for output in rsp.outputs)
@@ -447,11 +453,11 @@ def completion_stream_post_processor(rsp: DetokenizedGenerationResultBase,
                 cached_tokens=rsp.cached_tokens),
         )
 
-        final_usage_chunk = ChatCompletionStreamResponse(choices=[],
-                                                         model=args.model,
-                                                         usage=final_usage)
-        final_usage_data = final_usage_chunk.model_dump_json()
-        res.append(f"data: {final_usage_data}\n\n")
+        # Note: Using CompletionStreamResponse for consistency with the return type
+        final_usage_chunk = CompletionStreamResponse(choices=[],
+                                                     model=args.model,
+                                                     usage=final_usage)
+        res.append(final_usage_chunk)
     args.first_iteration = False
     return res
 

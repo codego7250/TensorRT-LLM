@@ -73,23 +73,37 @@ def main(model_dir: str, tp_size: int, engine_dir: Optional[str], n: int,
 
 
 def get_concatenated_content(outputs):
+    """Extract and concatenate content from post-processor outputs.
+    
+    Handles both ChatCompletionStreamResponse objects (new format) and
+    SSE-formatted strings (legacy format) for backward compatibility.
+    """
     content = []
     for chunk in outputs:
-        for line in chunk:
-            line = line.strip()
-            if not line.startswith('data: '):
-                continue
+        for item in chunk:
+            # Handle ChatCompletionStreamResponse objects (new format)
+            if hasattr(item, 'choices'):
+                for choice in item.choices:
+                    if hasattr(choice, 'delta') and hasattr(choice.delta, 'content'):
+                        content_value = choice.delta.content
+                        if content_value is not None:
+                            content.append(content_value)
+            # Handle SSE-formatted strings (legacy format)
+            elif isinstance(item, str):
+                line = item.strip()
+                if not line.startswith('data: '):
+                    continue
 
-            json_str = line.split('data: ', 1)[1]
-            if json_str == '[DONE]':
-                continue
+                json_str = line.split('data: ', 1)[1]
+                if json_str == '[DONE]':
+                    continue
 
-            data = json.loads(json_str)
-            for choice in data.get('choices', []):
-                if 'delta' in choice and 'content' in choice['delta']:
-                    content_value = choice['delta']['content']
-                    if content_value is not None:
-                        content.append(content_value)
+                data = json.loads(json_str)
+                for choice in data.get('choices', []):
+                    if 'delta' in choice and 'content' in choice['delta']:
+                        content_value = choice['delta']['content']
+                        if content_value is not None:
+                            content.append(content_value)
     return ''.join(content)
 
 
