@@ -91,7 +91,10 @@ def encode_arguments_to_dsml(tool_call: Dict[str, str]) -> str:
     )
     P_dsml_strs = []
 
-    arguments = json.loads(tool_call["arguments"])
+    if isinstance(tool_call["arguments"], str):
+        arguments = json.loads(tool_call["arguments"])
+    else:
+        arguments = tool_call["arguments"]
 
     for k, v in arguments.items():
         p_dsml_str = p_dsml_template.format(
@@ -157,6 +160,7 @@ def render_message(index: int, messages: List[Dict[str, Any]], thinking_mode: st
     tool_calls = msg.get("tool_calls")
     # support both reasoning_content and reasoning for compatibility
     reasoning_content = msg.get("reasoning") or msg.get("reasoning_content")
+    is_prefix = msg.get("prefix", False)
 
     if tools:
         tools = tools_from_openai_format(tools)
@@ -256,12 +260,14 @@ def render_message(index: int, messages: List[Dict[str, Any]], thinking_mode: st
                 thinking_template.format(reasoning_content=reasoning_content or "")
                 + thinking_end_token
             )
-
-        prompt += assistant_msg_template.format(
-            reasoning=thinking_part,
-            content=summary_content,
-            tool_calls=tool_calls_content,
-        )
+        if not tool_calls and is_prefix:
+            prompt += summary_content
+        else:
+            prompt += assistant_msg_template.format(
+                reasoning=thinking_part,
+                content=summary_content,
+                tool_calls=tool_calls_content,
+            )
     else:
         raise NotImplementedError(f"Unknown role: {role}")
 
