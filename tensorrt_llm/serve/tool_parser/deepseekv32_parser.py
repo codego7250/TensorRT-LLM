@@ -109,25 +109,49 @@ class DeepSeekV32Parser(BaseToolParser):
 
     def __init__(self):
         super().__init__()
+        # DSML format tokens (original DeepSeek V3.2 format)
         self.bot_token = "<｜DSML｜function_calls>"
         self.eot_token = "</｜DSML｜function_calls>"
         self.invoke_end_token = "</｜DSML｜invoke>"
-        self.parameter_regex = r'<｜DSML｜parameter\s+name="([^"]+)"\s+string="([^"]+)"\s*>(.*?)</｜DSML｜parameter>'
+        # Plain XML format tokens (alternate format used by some models)
+        self.bot_token_plain = "<function_calls>"
+        self.eot_token_plain = "</function_calls>"
+        self.invoke_end_token_plain = "</invoke>"
+        # Regexes support both DSML and plain XML formats via optional (?:｜DSML｜)?
+        self.parameter_regex = r'<(?:｜DSML｜)?parameter\s+name="([^"]+)"\s+string="([^"]+)"\s*>(.*?)</(?:｜DSML｜)?parameter>'
         self.partial_parameter_regex = (
-            r'<｜DSML｜parameter\s+name="([^"]+)"\s+string="([^"]+)"\s*>(.*)$'
+            r'<(?:｜DSML｜)?parameter\s+name="([^"]+)"\s+string="([^"]+)"\s*>(.*)$'
         )
         self.function_calls_regex = (
-            r"<｜DSML｜function_calls>(.*?)</｜DSML｜function_calls>"
+            r"<(?:｜DSML｜)?function_calls>(.*?)</(?:｜DSML｜)?function_calls>"
         )
         self.invoke_regex = (
-            r'<｜DSML｜invoke\s+name="([^"]+)"\s*>(.*?)(</｜DSML｜invoke>|$)'
+            r'<(?:｜DSML｜)?invoke\s+name="([^"]+)"\s*>(.*?)(</(?:｜DSML｜)?invoke>|$)'
         )
         self.prefix_parameter_end_call = ["</", "｜DSML｜", "parameter"]
         self.current_tool_id = -1
 
+    def _find_bot_token_pos(self, text: str) -> int:
+        """Find the position of either DSML or plain XML bot token.
+
+        Returns -1 if neither token is found.
+        """
+        dsml_pos = text.find(self.bot_token)
+        plain_pos = text.find(self.bot_token_plain)
+        if dsml_pos == -1:
+            return plain_pos
+        if plain_pos == -1:
+            return dsml_pos
+        return min(dsml_pos, plain_pos)
+
     def has_tool_call(self, text: str) -> bool:
         """Check if the text contains a deepseek v32 format tool call."""
-        return self.bot_token in text or "<｜DSML｜invoke" in text
+        return (
+            self.bot_token in text
+            or "<｜DSML｜invoke" in text
+            or self.bot_token_plain in text
+            or "<invoke name=" in text
+        )
 
     def _parse_parameters_from_xml(
         self, invoke_content: str, allow_partial: bool = False
@@ -210,9 +234,9 @@ class DeepSeekV32Parser(BaseToolParser):
         :param tools: List of available tools.
         :return: ParseResult indicating success or failure, consumed text, leftover text, and parsed calls.
         """
-        idx = text.find(self.bot_token)
+        idx = self._find_bot_token_pos(text)
         normal_text = text[:idx].strip() if idx != -1 else text
-        if self.bot_token not in text:
+        if idx == -1:
             return StreamingParseResult(normal_text=normal_text, calls=[])
 
         calls = []
@@ -256,24 +280,32 @@ class DeepSeekV32Parser(BaseToolParser):
         self._buffer += new_text
         current_text = self._buffer
 
-        # Check if buffer contains any DSML markers or ends with potential tag prefix
-        # This handles partial/streaming DSML content
-        dsml_markers = ["｜DSML｜", "<｜", "</｜"]
-        potentially_dsml = any(marker in current_text for marker in dsml_markers)
+        # Check if buffer contains any tool call markers (DSML or plain XML)
+        # This handles partial/streaming content for both formats
+        tool_markers = [
+            "｜DSML｜", "<｜", "</｜",
+            "<function_calls", "<invoke ", "</invoke", "</function_calls",
+        ]
+        potentially_tool_call = any(
+            marker in current_text for marker in tool_markers
+        )
 
         # Also check if text ends with start of a tag (to handle "<" arriving separately)
-        dsml_prefixes = ["<", "<｜", "</", "</｜"]
+        tag_prefixes = ["<", "<｜", "</", "</｜"]
         ends_with_prefix = any(
-            current_text.rstrip().endswith(prefix) for prefix in dsml_prefixes
+            current_text.rstrip().endswith(prefix) for prefix in tag_prefixes
         )
 
         if (
             not self.has_tool_call(current_text)
-            and not potentially_dsml
+            and not potentially_tool_call
             and not ends_with_prefix
         ):
             self._buffer = ""
-            for e_token in [self.eot_token, self.invoke_end_token]:
+            for e_token in [
+                self.eot_token, self.invoke_end_token,
+                self.eot_token_plain, self.invoke_end_token_plain,
+            ]:
                 if e_token in current_text:
                     current_text = current_text.replace(e_token, "")
             return StreamingParseResult(normal_text=current_text)

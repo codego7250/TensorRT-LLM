@@ -214,7 +214,7 @@ class LogProbStorage:
                 self.cum_log_probs[beam_idx] = cum_log_probs[beam_idx]
             else:
                 self.cum_log_probs[beam_idx] += sum(
-                    next(iter(prob.values())).logprob for prob in probs)
+                    next(iter(prob.values())).logprob for prob in probs if prob)
 
     def set_log_probs(self, log_probs: list[TokenLogprobs],
                       cum_log_probs: list[float]):

@@ -693,6 +693,7 @@ class OpenAIServer:
                 gather_generation_logits=self.llm.args.gather_generation_logits,
                 backend=self.llm.args.backend)
             postproc_args = ChatPostprocArgs.from_request(request)
+            postproc_args.tool_choice = "auto" if request.tools else postproc_args.tool_choice
             disaggregated_params = to_llm_disaggregated_params(request.disaggregated_params)
 
             conversation, mm_coroutines, mm_placeholder_counts = parse_chat_messages_coroutines(request.messages, self.model_config, self.multimodal_server_config)
