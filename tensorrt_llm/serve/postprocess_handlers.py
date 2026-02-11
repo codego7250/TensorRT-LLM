@@ -40,6 +40,7 @@ class ChatPostprocArgs(PostprocArgs):
     echo: bool = False
     role: str
     model: str
+    reasoning_effort: Optional[Any] = None
     num_choices: int = 1
     tools: Optional[List[ChatCompletionToolsParam]] = None
     tool_choice: Optional[Union[Literal["none"],
@@ -64,6 +65,7 @@ class ChatPostprocArgs(PostprocArgs):
             role="assistant"
             if request.add_generation_prompt else request.messages[-1]["role"],
             model=request.model,
+            reasoning_effort=request.reasoning_effort,
             num_choices=request.n if request.n else 1,
             tools=request.tools,
             tool_choice=request.tool_choice,
@@ -107,6 +109,8 @@ def create_logprobs(token_ids: List[int], tokenizer: TransformersTokenizer,
 
 def apply_reasoning_parser(args: ChatPostprocArgs, output_index: int, text: str,
                            streaming: bool) -> Tuple[str, str]:
+    if args.reasoning_effort is None:
+        return text, ""
     reasoning_parser = None
     if args.reasoning_parser is not None:
         if output_index not in args.reasoning_parser_dict:

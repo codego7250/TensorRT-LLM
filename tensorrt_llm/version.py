@@ -16,4 +16,4 @@
 #__version__ = "1.2.0rc10"
 #__version__ = "1.2.0rc18"
 #__version__ = "1.2.0rc19"
-__version__ = "1.2.0rc20"
+__version__ = "1.2.0rc21"

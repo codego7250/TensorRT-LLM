@@ -4,6 +4,7 @@ import base64
 import time
 import uuid
 from typing import Any, Dict, List, Literal, Optional, Union
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 import torch
 import xgrammar
@@ -558,14 +559,9 @@ class ChatCompletionRequest(OpenAIBaseModel):
     tool_choice: Optional[Union[Literal["none", "auto"],
                                 ChatCompletionNamedToolChoiceParam]] = "none"
     user: Optional[str] = None
+
     reasoning_effort: Optional[ReasoningEffort | Literal[
-        "low", "medium", "high"]] = Field(
-            default=ReasoningEffort.LOW,
-            description=(
-                "The level of reasoning effort to use. Controls how much "
-                "reasoning is shown in the model's response. Options: "
-                "'low', 'medium', 'high'."),
-        )
+        "low", "medium", "high"]] = None 
     prompt_ignore_length: Optional[int] = 0
 
     # doc: begin-chat-completion-sampling-params
@@ -645,6 +641,34 @@ class ChatCompletionRequest(OpenAIBaseModel):
          ))
 
     # doc: end-chat-completion-extra-params
+    @model_validator(mode='before')
+    @classmethod
+    def convert_reasoning_effort(cls, data):
+        v = data.get('reasoning_effort')
+        if v is None:
+            return data
+        if isinstance(v, bool):
+            if v:
+                data['reasoning_effort'] = 'medium'
+            else:
+                data['reasoning_effort'] = None
+                if data.get('chat_template_kwargs') is None:
+                    data['chat_template_kwargs'] = {}
+                data['chat_template_kwargs']['thinking'] = False
+                data['chat_template_kwargs']['enable_thinking'] = False
+        return data
+
+    @model_validator(mode="after")
+    def apply_reasoning_effort(self):
+        # normalize reasoning_effort if it can be a bool
+        # if reasoning_effort is set, ensure chat_template_kwargs exists and add thinking=true
+        if self.reasoning_effort is not None:
+            if self.chat_template_kwargs is None:
+                self.chat_template_kwargs = {}
+            self.chat_template_kwargs["thinking"] = True
+            self.chat_template_kwargs["enable_thinking"] = True
+
+        return self
 
     def to_sampling_params(self,
                            vocab_size: int = 32000,
