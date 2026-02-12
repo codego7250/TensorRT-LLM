@@ -1322,7 +1322,7 @@ class MLA(nn.Module):
 
         assert output is not None, "output must be provided"
 
-        if num_contexts > 0:
+        if num_contexts > 0 and num_ctx_tokens > 0:
             q_ctx = q[:num_ctx_tokens, ...]
             compressed_kv_ctx = compressed_kv[:num_ctx_tokens, ...]
             k_pe_ctx = k_pe[:num_ctx_tokens, ...]
@@ -1341,7 +1341,7 @@ class MLA(nn.Module):
                 topk_indices=topk_indices[:num_ctx_tokens, :],
             )
 
-        if num_generations > 0:
+        if num_generations > 0 and num_ctx_tokens > 0:
             q_gen = q[num_ctx_tokens:, ...]
             compressed_kv_gen = compressed_kv[num_ctx_tokens:, ...]
             k_pe_gen = k_pe[num_ctx_tokens:, ...]
