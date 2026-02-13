@@ -1092,8 +1092,31 @@ public:
                 // make sure to end at block boundary after current chunk
                 auto const flooredEndPosition
                     = (prepopulatedPromptLen + chunkSize) / kvTokensPerBlock * kvTokensPerBlock;
-                chunkSize = flooredEndPosition - prepopulatedPromptLen;
-                TLLM_CHECK(chunkSize <= getContextChunkSize());
+                auto const flooredChunkSize = flooredEndPosition - prepopulatedPromptLen;
+                // When prepopulatedPromptLen is block-aligned and chunkSize < kvTokensPerBlock,
+                // flooring can land back at prepopulatedPromptLen, producing chunkSize == 0.
+                // Similarly when prepopulatedPromptLen is mid-block and chunkSize is too small
+                // to reach the next block boundary, the floor lands before prepopulatedPromptLen
+                // producing a negative value.
+                // A zero or negative chunkSize causes moveToNextContextChunk() to not advance
+                // the position, leaving isFirstContextChunk() == true and triggering a duplicate
+                // addSequence. In this case, extend the chunk to the next block boundary.
+                if (flooredChunkSize > 0)
+                {
+                    chunkSize = flooredChunkSize;
+                    TLLM_CHECK(chunkSize <= getContextChunkSize());
+                }
+                else
+                {
+                    auto const nextBlockBoundary
+                        = ((prepopulatedPromptLen / kvTokensPerBlock) + 1) * kvTokensPerBlock;
+                    chunkSize = nextBlockBoundary - prepopulatedPromptLen;
+                    // setContextChunkSize will cap this at contextRemainingLength if needed
+                }
+                TLLM_CHECK_WITH_INFO(chunkSize > 0,
+                    "chunkSize must be positive to ensure context processing makes progress "
+                    "(requestId=%lu, prepopulatedPromptLen=%d, kvTokensPerBlock=%d)",
+                    mRequestId, prepopulatedPromptLen, kvTokensPerBlock);
             }
             contextCurrentPosition = prepopulatedPromptLen;
             setContextChunkSize(chunkSize);

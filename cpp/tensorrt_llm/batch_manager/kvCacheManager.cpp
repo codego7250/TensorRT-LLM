@@ -2354,7 +2354,10 @@ void KVCacheManager::addSequence(
         return mSequences.try_emplace(requestId, requestId, inputLength, beamWidth,
             mBlockManager.getWindowSizesMetadata(), kvCacheRetentionConfig);
     }();
-    TLLM_CHECK(emplaceDone);
+    TLLM_CHECK_WITH_INFO(emplaceDone,
+        "addSequence failed: requestId %lu already exists in mSequences (inputLength=%d, beamWidth=%d). "
+        "This may indicate a duplicate addSequence call without a prior removeSequence.",
+        requestId, inputLength, beamWidth);
     auto& sequence = seqIt->second;
 
     // Get statistics for block allocations/reuse pre request.
