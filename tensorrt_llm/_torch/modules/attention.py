@@ -1036,8 +1036,8 @@ class MLA(nn.Module):
                 torch.empty(
                     (
                         self.num_heads_tp,
-                        self.kv_lora_rank // 128,
-                        self.qk_nope_head_dim // 128,
+                        (self.kv_lora_rank + 127) // 128,
+                        (self.qk_nope_head_dim + 127) // 128,
                     ),
                     dtype=torch.float32,
                 ),
@@ -1049,8 +1049,8 @@ class MLA(nn.Module):
                 torch.empty(
                     (
                         self.num_heads_tp_cp,
-                        self.v_head_dim // 128,
-                        self.kv_lora_rank // 128,
+                        (self.v_head_dim + 127) // 128,
+                        (self.kv_lora_rank + 127) // 128,
                     ),
                     dtype=torch.float32,
                 ),

@@ -2772,11 +2772,10 @@ int AttentionOp::initialize() noexcept
                 // Context attention of MLA is different
                 fmhaParams.numKvHeads = mNumHeads;
                 fmhaParams.headSize = mMLAParams.qk_nope_head_dim + mMLAParams.qk_rope_head_dim;
-                // Ideally this should be mMLAParams.v_head_dim, but because we initialize both MLA
-                // context(v_head_dim=128) and gen(v_head_dim=512) runners in a single op, the headSizeV will be set to
-                // 512 when we create the gen attention op and that could fail to create the FmhaDispatcher for context
-                // phase. Luckily, for deepseek, qk_nope_head_dim is the same as v_head_dim in context phase.
-                fmhaParams.headSizeV = mMLAParams.qk_nope_head_dim;
+                // Use v_head_dim for the context-phase headSizeV. Note: this FmhaDispatcher is only
+                // used for the context phase; generation MLA uses TllmGen/XQA/FlashMLA dispatchers
+                // which are initialized separately with kv_lora_rank as headSizeV.
+                fmhaParams.headSizeV = mMLAParams.v_head_dim;
                 fmhaParams.headSizeQkNope = mMLAParams.qk_nope_head_dim;
             }
         }

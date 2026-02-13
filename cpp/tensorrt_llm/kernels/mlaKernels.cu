@@ -1018,25 +1018,51 @@ void invokeMLAContextFp8Quantize(MlaParams<T>& params, int total_kv_len, cudaStr
         }
         else
         {
-            // The Q or K tensor has layout of [num_tokens, head_num, 192] in the non-absorption mode.
-            // The V tensor has layout of [num_tokens, head_num, 128] in the non-absorption mode.
-            // Convert Q, K, V to FP8 in non-absorption mode.
-
-            constexpr int threads_per_block = 384;
-            constexpr int num_tokens_per_block = threads_per_block * 16 / 192 * sizeof(T);
-            dim3 grid(int(tensorrt_llm::common::divUp(total_kv_len, num_tokens_per_block)), 1, params.head_num);
+            // The Q or K tensor has layout of [num_tokens, head_num, qk_nope_head_dim + qk_rope_head_dim] in the
+            // non-absorption mode. The V tensor has layout of [num_tokens, head_num, v_head_dim] in the
+            // non-absorption mode. Convert Q, K, V to FP8 in non-absorption mode.
+            // Dispatch based on qk_nope_head_dim and v_head_dim.
+            auto const qk_nope_head_dim = params.meta.qk_nope_head_dim;
+            auto const qk_rope_head_dim = params.meta.qk_rope_head_dim;
+            auto const v_head_dim = params.meta.v_head_dim;
+            auto const qk_head_dim = qk_nope_head_dim + qk_rope_head_dim;
 
             TLLM_LOG_DEBUG(
-                "Launching quantizeCopyInputToFp8Kernel with grid_size: (%d, %d, %d), threads_per_block: %d, "
-                "total_kv_len: %d, acc_q_len: %d, absorption_mode: %d",
-                grid.x, grid.y, grid.z, threads_per_block, total_kv_len, params.acc_q_len, params.absorption_mode);
+                "Launching quantizeCopyInputToFp8Kernel (non-absorption) with "
+                "total_kv_len: %d, acc_q_len: %d, qk_nope_head_dim: %d, qk_rope_head_dim: %d, v_head_dim: %d",
+                total_kv_len, params.acc_q_len, qk_nope_head_dim, qk_rope_head_dim, v_head_dim);
 
-            quantizeCopyInputToFp8Kernel<T, threads_per_block, 128, 64, 128, false>
-                <<<grid, threads_per_block, 0, stream>>>(params.q_buf, static_cast<__nv_fp8_e4m3*>(params.quant_q_buf),
-                    params.k_buf, static_cast<__nv_fp8_e4m3*>(params.quant_k_buf), params.v_buf,
-                    static_cast<__nv_fp8_e4m3*>(params.quant_v_buf), params.acc_q_len, total_kv_len,
-                    params.quant_scale_qkv, params.bmm1_scale, params.bmm2_scale, params.quant_scale_o,
-                    params.dequant_scale_q, params.dequant_scale_kv, params.host_bmm1_scale);
+            if (qk_nope_head_dim == 128 && v_head_dim == 128)
+            {
+                constexpr int tpb = 384;
+                constexpr int num_tokens_per_block = tpb * 16 / 192 * sizeof(T);
+                dim3 grid(int(tensorrt_llm::common::divUp(total_kv_len, num_tokens_per_block)), 1, params.head_num);
+                quantizeCopyInputToFp8Kernel<T, tpb, 128, 64, 128, false>
+                    <<<grid, tpb, 0, stream>>>(params.q_buf, static_cast<__nv_fp8_e4m3*>(params.quant_q_buf),
+                        params.k_buf, static_cast<__nv_fp8_e4m3*>(params.quant_k_buf), params.v_buf,
+                        static_cast<__nv_fp8_e4m3*>(params.quant_v_buf), params.acc_q_len, total_kv_len,
+                        params.quant_scale_qkv, params.bmm1_scale, params.bmm2_scale, params.quant_scale_o,
+                        params.dequant_scale_q, params.dequant_scale_kv, params.host_bmm1_scale);
+            }
+            else if (qk_nope_head_dim == 192 && v_head_dim == 256)
+            {
+                constexpr int tpb = 256;
+                constexpr int num_tokens_per_block = tpb * 16 / 256 * sizeof(T);
+                dim3 grid(int(tensorrt_llm::common::divUp(total_kv_len, num_tokens_per_block)), 1, params.head_num);
+                quantizeCopyInputToFp8Kernel<T, tpb, 192, 64, 256, false>
+                    <<<grid, tpb, 0, stream>>>(params.q_buf, static_cast<__nv_fp8_e4m3*>(params.quant_q_buf),
+                        params.k_buf, static_cast<__nv_fp8_e4m3*>(params.quant_k_buf), params.v_buf,
+                        static_cast<__nv_fp8_e4m3*>(params.quant_v_buf), params.acc_q_len, total_kv_len,
+                        params.quant_scale_qkv, params.bmm1_scale, params.bmm2_scale, params.quant_scale_o,
+                        params.dequant_scale_q, params.dequant_scale_kv, params.host_bmm1_scale);
+            }
+            else
+            {
+                TLLM_CHECK_WITH_INFO(false,
+                    "Unsupported qk_nope_head_dim=%d / v_head_dim=%d combination for FP8 MLA context quantization. "
+                    "Supported: (128, 128) and (192, 256).",
+                    qk_nope_head_dim, v_head_dim);
+            }
         }
     }
     else

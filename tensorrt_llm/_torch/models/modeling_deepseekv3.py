@@ -165,9 +165,9 @@ class DeepseekV3WeightLoader:
         def load_kv_b_proj_and_k_b_proj_trans(module_name: str,
                                               is_scale: bool) -> torch.Tensor:
             weight_name = "weight" if not is_scale else "weight_scale_inv"
-            local_qk_nope_head_dim = qk_nope_head_dim if not is_scale else qk_nope_head_dim // 128
-            local_v_head_dim = v_head_dim if not is_scale else v_head_dim // 128
-            local_kv_lora_rank = kv_lora_rank if not is_scale else kv_lora_rank // 128
+            local_qk_nope_head_dim = qk_nope_head_dim if not is_scale else (qk_nope_head_dim + 127) // 128
+            local_v_head_dim = v_head_dim if not is_scale else (v_head_dim + 127) // 128
+            local_kv_lora_rank = kv_lora_rank if not is_scale else (kv_lora_rank + 127) // 128
 
             kv_b_proj = weights[f"{module_name}.{weight_name}"][:].unflatten(
                 0,
@@ -241,8 +241,8 @@ class DeepseekV3WeightLoader:
 
         def split_kv_b_proj(kv_b_proj: torch.Tensor,
                             is_scale: bool) -> torch.Tensor:
-            local_qk_nope_head_dim = qk_nope_head_dim if not is_scale else qk_nope_head_dim // 128
-            local_v_head_dim = v_head_dim if not is_scale else v_head_dim // 128
+            local_qk_nope_head_dim = qk_nope_head_dim if not is_scale else (qk_nope_head_dim + 127) // 128
+            local_v_head_dim = v_head_dim if not is_scale else (v_head_dim + 127) // 128
 
             weight_divisor = 1 if self.model_config.mapping.enable_attention_dp else tp_size
             local_num_heads = num_heads // weight_divisor
