@@ -746,16 +746,23 @@ class ChatCompletionRequest(OpenAIBaseModel):
     def convert_reasoning_effort(cls, data):
         v = data.get('reasoning_effort')
         if v is None:
+            data['reasoning_effort'] = 'low'
+            if data.get('chat_template_kwargs') is None:
+                data['chat_template_kwargs'] = {}
+            data['chat_template_kwargs']['thinking'] = True
+            data['chat_template_kwargs']['enable_thinking'] = True
             return data
         if isinstance(v, bool):
             if v:
-                data['reasoning_effort'] = 'medium'
+                data['reasoning_effort'] = 'low'
             else:
                 data['reasoning_effort'] = None
                 if data.get('chat_template_kwargs') is None:
                     data['chat_template_kwargs'] = {}
                 data['chat_template_kwargs']['thinking'] = False
                 data['chat_template_kwargs']['enable_thinking'] = False
+        elif isinstance(v, int):
+            data['reasoning_effort'] = 'low'
         return data
 
     @model_validator(mode="after")
