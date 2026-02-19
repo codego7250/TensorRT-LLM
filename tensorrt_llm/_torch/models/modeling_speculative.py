@@ -75,6 +75,9 @@ class Eagle3Attention(Attention):
                 fused_weight_shard_indices_mapping=qkv_shard_indices_mapping,
             )
 
+        # Sliding window attention support
+        self.sliding_window = getattr(config, 'sliding_window', None)
+
 
 class Eagle3DecoderLayer(DecoderLayer):
 
@@ -137,10 +140,17 @@ class Eagle3DecoderLayer(DecoderLayer):
             embeds = self.input_layernorm(embeds)
             hidden_states = torch.cat([embeds, hidden_states], dim=-1)
 
+        # Pass sliding window attention parameters if available
+        attn_kwargs = {}
+        if hasattr(self.self_attn,
+                   'sliding_window') and self.self_attn.sliding_window is not None:
+            attn_kwargs['attention_window_size'] = self.self_attn.sliding_window
+
         hidden_states = self.self_attn(
             position_ids=position_ids,
             hidden_states=hidden_states,
             attn_metadata=attn_metadata,
+            **attn_kwargs,
         )
 
         hidden_states, residual = self.post_attention_layernorm(
