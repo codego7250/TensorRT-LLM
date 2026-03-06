@@ -42,8 +42,17 @@ from tensorrt_llm.llmapi.disagg_utils import (DisaggClusterConfig,
 from tensorrt_llm.llmapi.llm import RequestOutput
 from tensorrt_llm.logger import logger
 from tensorrt_llm.metrics.collector import MetricsCollector
+
 from tensorrt_llm.serve.chat_utils import (load_chat_template,
                                            parse_chat_messages_coroutines)
+
+from tensorrt_llm.metrics.enums import MetricNames
+from tensorrt_llm.serve.chat_utils import (
+    apply_reasoning_history,
+    load_chat_template,
+    parse_chat_messages_coroutines,
+)
+
 from tensorrt_llm.serve.cluster_storage import create_cluster_storage_client
 from tensorrt_llm.serve.disagg_auto_scaling import DisaggClusterWorker
 from tensorrt_llm.serve.media_storage import MediaStorage, resolve_video_format
@@ -299,11 +308,15 @@ class OpenAIServer:
     def postproc_worker_enabled(self) -> bool:
         return True if self.generator.args.num_postprocess_workers > 0 else False
 
-    @staticmethod
     def create_error_response(
+            self,
             message: str,
             err_type: str = "BadRequestError",
             status_code: HTTPStatus = HTTPStatus.BAD_REQUEST) -> Response:
+        # Track error rate
+        if self.metrics_collector:
+            self.metrics_collector.log_request_error(
+                http_code=status_code.value)
         error_response = ErrorResponse(message=message,
                                        type=err_type,
                                        code=status_code.value)
@@ -346,6 +359,7 @@ class OpenAIServer:
                                methods=["GET"])
         self.app.add_api_route("/version", self.version, methods=["GET"])
         self.app.add_api_route("/v1/models", self.get_model, methods=["GET"])
+<<<<<<< HEAD
         # TODO: the metrics endpoint only reports iteration stats, not the runtime stats for now
         self.app.add_api_route("/metrics",
                                self.get_iteration_stats,
@@ -364,6 +378,13 @@ class OpenAIServer:
         self.app.add_api_route("/kv_cache_events",
                                self.get_kv_cache_events,
                                methods=["POST"])
+=======
+        self.app.add_api_route("/iteration_stats", self.get_iteration_stats, methods=["GET"])
+        self.app.add_api_route("/perf_metrics", self.get_perf_metrics, methods=["GET"])
+        self.app.add_api_route("/steady_clock_offset", self.get_steady_clock_offset, methods=["GET"])
+        self.app.add_api_route("/steady_clock_offset", self.set_steady_clock_offset, methods=["POST"])
+        self.app.add_api_route("/kv_cache_events", self.get_kv_cache_events, methods=["POST"])
+>>>>>>> 673f107cb (Merge pull request #17 from fw-ai/vedularaghu/metrics-1.3.0rc2)
         self.app.add_api_route("/v1/completions",
                                self.openai_completion,
                                methods=["POST"])
@@ -415,19 +436,32 @@ class OpenAIServer:
             registry=registry,
         ).add().instrument(self.app).expose(self.app)
         metrics_app = make_asgi_app(registry=registry)
+<<<<<<< HEAD
         metrics_route = Mount("/prometheus/metrics", metrics_app)
         metrics_route.path_regex = re.compile(
             "^/prometheus/metrics(?P<path>.*)$")
+=======
+        # Prometheus at /metrics and /prometheus/metrics (backward compat)
+        metrics_route = Mount("/metrics", metrics_app)
+        metrics_route.path_regex = re.compile("^/metrics(?P<path>.*)$")
+>>>>>>> 673f107cb (Merge pull request #17 from fw-ai/vedularaghu/metrics-1.3.0rc2)
         self.app.routes.append(metrics_route)
+        metrics_route_legacy = Mount("/prometheus/metrics", metrics_app)
+        metrics_route_legacy.path_regex = re.compile("^/prometheus/metrics(?P<path>.*)$")
+        self.app.routes.append(metrics_route_legacy)
 
     def register_mm_encoder_routes(self):
         self.app.add_api_route("/health", self.health, methods=["GET"])
         self.app.add_api_route("/version", self.version, methods=["GET"])
         self.app.add_api_route("/v1/models", self.get_model, methods=["GET"])
+<<<<<<< HEAD
         # TODO: the metrics endpoint only reports iteration stats, not the runtime stats for now
         self.app.add_api_route("/metrics",
                                self.get_iteration_stats,
                                methods=["GET"])
+=======
+        self.app.add_api_route("/iteration_stats", self.get_iteration_stats, methods=["GET"])
+>>>>>>> 673f107cb (Merge pull request #17 from fw-ai/vedularaghu/metrics-1.3.0rc2)
         self.app.add_api_route("/v1/chat/completions",
                                self.openai_mm_encoder,
                                methods=["POST"])
@@ -552,6 +586,8 @@ class OpenAIServer:
         stats = []
         async for stat in self.generator.get_stats_async(2):
             stats.append(stat)
+        if stats and self.metrics_collector:
+            self.metrics_collector.log_iteration_metrics(stats[-1])
         return JSONResponse(content=stats)
 
     async def set_steady_clock_offset(
@@ -658,12 +694,19 @@ class OpenAIServer:
         if not res.finished:
             return
         if self.metrics_collector:
+<<<<<<< HEAD
             self.metrics_collector.log_request_metrics_dict(res.metrics_dict)
             # Note: Iteration stats are collected by the background _iteration_stats_collector_loop task
             # Wake up the stats collector to drain iteration stats
             if getattr(self.generator.args, "enable_iter_perf_stats", True):
                 self._iteration_stats_wakeup_event.set()
         if self.generator.args.return_perf_metrics:
+=======
+            if res.prompt_token_ids:
+                res.metrics_dict[MetricNames.PROMPT_TOKENS] = len(res.prompt_token_ids)
+            self.metrics_collector.log_metrics_dict(res.metrics_dict)
+        if self.llm.args.return_perf_metrics:
+>>>>>>> 673f107cb (Merge pull request #17 from fw-ai/vedularaghu/metrics-1.3.0rc2)
             output = res.outputs[0]
             item = {
                 "request_id": res.request_id,
