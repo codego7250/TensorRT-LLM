@@ -752,6 +752,22 @@ class ChatCompletionRequest(OpenAIBaseModel):
             data['chat_template_kwargs']['thinking'] = True
             data['chat_template_kwargs']['enable_thinking'] = True
             return data
+        if hasattr(v, 'value'):
+            if v.value == 'none':
+                v = 'none'
+            else:
+                v = 'low'
+            data['reasoning_effort'] = v
+        if isinstance(v, str):
+            if v.lower() == 'none':
+                data['reasoning_effort'] = None
+                if data.get('chat_template_kwargs') is None:
+                    data['chat_template_kwargs'] = {}
+                data['chat_template_kwargs']['thinking'] = False
+                data['chat_template_kwargs']['enable_thinking'] = False
+            else:
+                data['reasoning_effort'] = v.lower()
+            return data
         if isinstance(v, bool):
             if v:
                 data['reasoning_effort'] = 'low'
