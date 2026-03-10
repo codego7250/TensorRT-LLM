@@ -792,6 +792,13 @@ class OpenAIServer:
                 yield "data: [DONE]\n\n"
                 await self._extract_metrics(res, raw_request)
                 nvtx_mark("generation ends")
+            except asyncio.CancelledError:
+                logger.info(
+                    f"Client disconnected, cancelling chat stream for request {promise.request_id}"
+                )
+                if not promise.finished:
+                    promise.abort()
+                return
             except:
                 logger.error(traceback.format_exc())
                 raise
@@ -1063,6 +1070,13 @@ class OpenAIServer:
                     for pp_res in pp_result:
                         yield pp_res
                 await self._extract_metrics(output, raw_request)
+            except asyncio.CancelledError:
+                logger.info(
+                    f"Client disconnected, cancelling completion stream for request {promise.request_id}"
+                )
+                if not promise.finished:
+                    promise.abort()
+                return
             except:
                 logger.error(traceback.format_exc())
                 raise
