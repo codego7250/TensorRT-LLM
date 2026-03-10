@@ -1073,7 +1073,8 @@ class SpecDecOneEngineForCausalLM(DecoderModelForCausalLM[TModel, TConfig],
                     and model_config.spec_config.eagle3_model_arch == "llama3"):
                 for key, value in self.draft_config.extra_attrs.items():
                     assert key in ('attn_layers', 'mla_layers')
-                    assert key in model_config.extra_attrs
+                    if key not in model_config.extra_attrs:
+                        model_config.extra_attrs[key] = {}
                     model_config.extra_attrs[key].update(value)
 
             # spec_worker is created for all one-engine modes (MTP, Eagle3, SA)
