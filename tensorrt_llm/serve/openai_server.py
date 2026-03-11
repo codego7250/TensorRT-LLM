@@ -359,32 +359,11 @@ class OpenAIServer:
                                methods=["GET"])
         self.app.add_api_route("/version", self.version, methods=["GET"])
         self.app.add_api_route("/v1/models", self.get_model, methods=["GET"])
-<<<<<<< HEAD
-        # TODO: the metrics endpoint only reports iteration stats, not the runtime stats for now
-        self.app.add_api_route("/metrics",
-                               self.get_iteration_stats,
-                               methods=["GET"])
-        self.app.add_api_route("/perf_metrics",
-                               self.get_perf_metrics,
-                               methods=["GET"])
-        self.app.add_api_route("/steady_clock_offset",
-                               self.get_steady_clock_offset,
-                               methods=["GET"])
-        # Called by the disagg server to set the disagg_server_steady_clock_offset
-        self.app.add_api_route("/steady_clock_offset",
-                               self.set_steady_clock_offset,
-                               methods=["POST"])
-        # TODO: workaround before ETCD support
-        self.app.add_api_route("/kv_cache_events",
-                               self.get_kv_cache_events,
-                               methods=["POST"])
-=======
         self.app.add_api_route("/iteration_stats", self.get_iteration_stats, methods=["GET"])
         self.app.add_api_route("/perf_metrics", self.get_perf_metrics, methods=["GET"])
         self.app.add_api_route("/steady_clock_offset", self.get_steady_clock_offset, methods=["GET"])
         self.app.add_api_route("/steady_clock_offset", self.set_steady_clock_offset, methods=["POST"])
         self.app.add_api_route("/kv_cache_events", self.get_kv_cache_events, methods=["POST"])
->>>>>>> 673f107cb (Merge pull request #17 from fw-ai/vedularaghu/metrics-1.3.0rc2)
         self.app.add_api_route("/v1/completions",
                                self.openai_completion,
                                methods=["POST"])
@@ -436,15 +415,10 @@ class OpenAIServer:
             registry=registry,
         ).add().instrument(self.app).expose(self.app)
         metrics_app = make_asgi_app(registry=registry)
-<<<<<<< HEAD
-        metrics_route = Mount("/prometheus/metrics", metrics_app)
-        metrics_route.path_regex = re.compile(
-            "^/prometheus/metrics(?P<path>.*)$")
-=======
+
         # Prometheus at /metrics and /prometheus/metrics (backward compat)
         metrics_route = Mount("/metrics", metrics_app)
         metrics_route.path_regex = re.compile("^/metrics(?P<path>.*)$")
->>>>>>> 673f107cb (Merge pull request #17 from fw-ai/vedularaghu/metrics-1.3.0rc2)
         self.app.routes.append(metrics_route)
         metrics_route_legacy = Mount("/prometheus/metrics", metrics_app)
         metrics_route_legacy.path_regex = re.compile("^/prometheus/metrics(?P<path>.*)$")
@@ -454,14 +428,11 @@ class OpenAIServer:
         self.app.add_api_route("/health", self.health, methods=["GET"])
         self.app.add_api_route("/version", self.version, methods=["GET"])
         self.app.add_api_route("/v1/models", self.get_model, methods=["GET"])
-<<<<<<< HEAD
         # TODO: the metrics endpoint only reports iteration stats, not the runtime stats for now
         self.app.add_api_route("/metrics",
                                self.get_iteration_stats,
                                methods=["GET"])
-=======
         self.app.add_api_route("/iteration_stats", self.get_iteration_stats, methods=["GET"])
->>>>>>> 673f107cb (Merge pull request #17 from fw-ai/vedularaghu/metrics-1.3.0rc2)
         self.app.add_api_route("/v1/chat/completions",
                                self.openai_mm_encoder,
                                methods=["POST"])
@@ -694,19 +665,17 @@ class OpenAIServer:
         if not res.finished:
             return
         if self.metrics_collector:
-<<<<<<< HEAD
             self.metrics_collector.log_request_metrics_dict(res.metrics_dict)
             # Note: Iteration stats are collected by the background _iteration_stats_collector_loop task
             # Wake up the stats collector to drain iteration stats
             if getattr(self.generator.args, "enable_iter_perf_stats", True):
                 self._iteration_stats_wakeup_event.set()
-        if self.generator.args.return_perf_metrics:
-=======
             if res.prompt_token_ids:
                 res.metrics_dict[MetricNames.PROMPT_TOKENS] = len(res.prompt_token_ids)
             self.metrics_collector.log_metrics_dict(res.metrics_dict)
-        if self.llm.args.return_perf_metrics:
->>>>>>> 673f107cb (Merge pull request #17 from fw-ai/vedularaghu/metrics-1.3.0rc2)
+
+        if self.generator.args.return_perf_metrics:
+
             output = res.outputs[0]
             item = {
                 "request_id": res.request_id,

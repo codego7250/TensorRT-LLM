@@ -235,11 +235,6 @@ class MetricsCollector:
         # Convenience function for logging to gauge.
         gauge.labels(**self.labels).set(data)
 
-<<<<<<< HEAD
-    def log_request_metrics_dict(self, metrics_dict: dict[str, float]) -> None:
-        """
-        Log per-request metrics from TRTLLM engine responses.
-=======
     def log_histogram(self, data: Optional[dict[str, float]]) -> None:
         if not data:
             return
@@ -313,8 +308,10 @@ class MetricsCollector:
         labels = {**self.labels, self.labelname_http_code: str(http_code)}
         self.counter_request_error.labels(**labels).inc(1)
         self.last_log_time = time.time()
->>>>>>> 673f107cb (Merge pull request #17 from fw-ai/vedularaghu/metrics-1.3.0rc2)
 
+    def log_request_metrics_dict(self, metrics_dict: dict[str, float]) -> None:
+        """
+        Log per-request metrics from TRTLLM engine responses.
         This method updates Prometheus metrics including:
         - counter_request_success
         - histogram_e2e_time_request
@@ -343,7 +340,7 @@ class MetricsCollector:
         """
         if finish_reason := metrics_dict.get(
                 MetricsCollector.labelname_finish_reason):
-<<<<<<< HEAD
+
             # If the request finishes, log per-request metrics
             self._log_counter(
                 self.counter_request_success,
@@ -359,6 +356,9 @@ class MetricsCollector:
                 self._log_histogram(self.histogram_queue_time_request,
                                     request_queue_time)
             self.last_log_time = time.time()
+            self.log_request_success(
+                1, {MetricsCollector.labelname_finish_reason: finish_reason})
+            self.log_histogram(metrics_dict)
 
     def log_iteration_stats(self, iteration_stats: dict) -> None:
         """
@@ -395,9 +395,3 @@ class MetricsCollector:
                 if max_num_blocks:
                     utilization = kv_stats["usedNumBlocks"] / max_num_blocks
                     self._log_gauge(self.kv_cache_utilization, utilization)
-=======
-            self.log_request_success(
-                1, {MetricsCollector.labelname_finish_reason: finish_reason})
-            self.log_histogram(metrics_dict)
-
->>>>>>> 673f107cb (Merge pull request #17 from fw-ai/vedularaghu/metrics-1.3.0rc2)
