@@ -16,7 +16,7 @@
 
 import math
 import time
-from typing import Dict, Union
+from typing import Dict, Union, Optional
 
 from .enums import MetricNames
 
