@@ -475,11 +475,19 @@ class RequestBroadcaster:
         else:
             py_request_objects = None
 
+        pause_hang_detector = os.getenv(
+            "TRTLLM_PAUSE_HANG_DETECTOR_DURING_BROADCAST", "1"
+        ) == "1"
         if self.dist.rank == 0:
             # Preserve original `new_requests` on rank 0
             _ = self._broadcast_requests(new_requests, py_request_objects)
         else:
-            with self.hang_detector.pause():
+            if pause_hang_detector:
+                with self.hang_detector.pause():
+                    new_requests, py_request_objects = self._broadcast_requests(
+                        new_requests, py_request_objects
+                    )
+            else:
                 new_requests, py_request_objects = self._broadcast_requests(
                     new_requests, py_request_objects
                 )

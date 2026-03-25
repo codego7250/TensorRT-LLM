@@ -842,7 +842,17 @@ class OpenAIServer:
                 return
             except Exception:
                 logger.error(traceback.format_exc())
-                raise
+                error_data = json.dumps({
+                    "error": {
+                        "message": "Internal server error",
+                        "type": "server_error",
+                        "code": None,
+                        "param": None,
+                    }
+                })
+                yield f"data: {error_data}\n\n"
+                yield "data: [DONE]\n\n"
+                return
 
         try:
             conversation: List[ConversationMessage] = []
@@ -1193,13 +1203,29 @@ class OpenAIServer:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
         async def generator_wrapper(generator: AsyncIterator[Any]):
-            first_response = await anext(generator)
-            raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds(
-            )
-            yield first_response
-            async for output in generator:
-                yield output
-            yield "data: [DONE]\n\n"
+            try:
+                first_response = await anext(generator)
+                raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds(
+                )
+                yield first_response
+                async for output in generator:
+                    yield output
+                yield "data: [DONE]\n\n"
+            except StopAsyncIteration:
+                # If upstream generator ends before producing any chunk,
+                # still terminate stream cleanly.
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                error_data = json.dumps({
+                    "error": {
+                        "message": str(e),
+                        "type": "server_error",
+                        "code": None,
+                        "param": None,
+                    }
+                })
+                yield f"data: {error_data}\n\n"
+                yield "data: [DONE]\n\n"
 
         try:
             if isinstance(request.prompt, str) or \
