@@ -1180,7 +1180,10 @@ class OpenAIServer:
                 postproc_args = CompletionPostprocArgs.from_request(request)
                 postproc_args.prompt_idx = idx
                 if request.echo:
-                    postproc_args.prompt = prompt
+                    if isinstance(prompt, list):
+                        postproc_args.prompt = self.tokenizer.decode(prompt)
+                    else:
+                        postproc_args.prompt = prompt
                 postproc_params = PostprocParams(
                     post_processor=completion_stream_post_processor
                     if request.stream else completion_response_post_processor,
