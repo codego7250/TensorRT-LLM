@@ -433,7 +433,7 @@ class CompletionRequest(OpenAIBaseModel):
             # completion-extra-params
             add_special_tokens=self.add_special_tokens,
         )
-        if self.logprobs:
+        if self.logprobs is not None:
             if backend == "pytorch":
                 sampling_params.logprobs = self.logprobs
             else:

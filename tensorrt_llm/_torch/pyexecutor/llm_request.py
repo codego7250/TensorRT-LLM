@@ -600,6 +600,8 @@ class LlmResponse:
             py_result = self.result._py_result
             if hasattr(py_result, '_context_logits'):
                 py_result._context_logits = None
+            if hasattr(py_result, 'diff') and py_result.diff.context_logits_list:
+                py_result.diff.context_logits_list.clear()
 
 
 class LlmRequest(tensorrt_llm.bindings.internal.batch_manager.LlmRequest):

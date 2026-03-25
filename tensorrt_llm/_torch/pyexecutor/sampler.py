@@ -1403,6 +1403,8 @@ class TorchSampler(Sampler[SampleStateTorch], AsyncWorkerMixin):
 
             if (stop_words_list := request.py_stop_words_list) is not None:
                 seq_slot = request.py_seq_slot
+                if seq_slot is None:
+                    raise ValueError("request.py_seq_slot must not be None when stop words are set")
                 self._temp_data.stop_word_seq_slots.append(seq_slot)
                 extracted_stop_words_cuda, max_length, num_stop_words = self._extract_stop_words(
                     stop_words_list
@@ -1513,6 +1515,8 @@ class TorchSampler(Sampler[SampleStateTorch], AsyncWorkerMixin):
                 if (stop_words_list := request.py_stop_words_list) is not None:
                     extracted_stop_words_cuda, _, _ = self._extract_stop_words(stop_words_list)
                     seq_slot = request.py_seq_slot
+                    if seq_slot is None:
+                        raise ValueError("request.py_seq_slot must not be None when stop words are set")
                     stop_word_seq_slots.append(seq_slot)
                     stop_words_cuda_list.append(extracted_stop_words_cuda)
                     past_tokens_cuda_list.append(self._get_past_tokens(request))
