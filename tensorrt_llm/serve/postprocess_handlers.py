@@ -407,6 +407,7 @@ class CompletionPostprocArgs(PostprocArgs):
     prompt_idx: int = 0
     detokenize: bool = True
     prompt: Optional[str] = None
+    prompt_token_ids: Optional[List[int]] = None
     return_logprobs: bool = False
     stream_options: Optional[StreamOptions] = None
 
@@ -482,6 +483,9 @@ def completion_stream_post_processor(rsp: DetokenizedGenerationResultBase,
         if args.return_logprobs:
             logprobs = output.logprobs_diff
             token_ids = output.token_ids_diff
+            if args.echo and args.first_iteration and args.prompt_token_ids and output.prompt_logprobs:
+                token_ids = list(args.prompt_token_ids) + list(token_ids)
+                logprobs = list(output.prompt_logprobs) + list(logprobs)
             choice.logprobs = create_completion_logprobs(
                 token_ids, args.tokenizer, logprobs, output._last_text_len)
 
@@ -543,6 +547,9 @@ def completion_response_post_processor(
         if args.return_logprobs:
             logprobs = output.logprobs
             token_ids = output.token_ids
+            if args.echo and args.prompt_token_ids and output.prompt_logprobs:
+                token_ids = list(args.prompt_token_ids) + list(token_ids)
+                logprobs = list(output.prompt_logprobs) + list(logprobs)
             choice.logprobs = create_completion_logprobs(
                 token_ids, args.tokenizer, logprobs)
 

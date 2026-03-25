@@ -1219,6 +1219,8 @@ class OpenAIServer:
                     postproc_args.tokenizer = self.tokenizer
                     postproc_args.num_prompt_tokens = len(
                         promise.prompt_token_ids)
+                    if request.echo and request.logprobs:
+                        postproc_args.prompt_token_ids = promise.prompt_token_ids
                 promises.append(promise)
                 postproc_params_collection.append(
                     None if self.postproc_worker_enabled else postproc_params)

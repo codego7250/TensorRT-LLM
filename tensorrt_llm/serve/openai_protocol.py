@@ -445,6 +445,8 @@ class CompletionRequest(OpenAIBaseModel):
                     )
                 else:
                     sampling_params._return_log_probs = True
+            if self.echo:
+                sampling_params.prompt_logprobs = self.logprobs
         return sampling_params
 
     @model_validator(mode="before")
