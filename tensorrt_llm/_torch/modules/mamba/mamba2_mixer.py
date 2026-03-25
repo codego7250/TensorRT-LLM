@@ -526,11 +526,17 @@ class Mamba2Mixer(nn.Module):
                     **ssu_kwargs,
                 )
 
+        # Prevent NaN/Inf from persisting in state caches and propagating to
+        # subsequent requests/layers (long-context SSM overflow).
+        conv_states.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+        ssm_states.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+
         # norm
         hidden_states = self.norm(preallocated_ssm_out, z[:num_actual_tokens])
 
         # out_proj
         out = self.out_proj(hidden_states)
+        out.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
 
         return out[:num_actual_tokens]
 

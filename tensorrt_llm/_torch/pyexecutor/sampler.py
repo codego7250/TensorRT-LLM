@@ -3854,6 +3854,8 @@ class TorchSampler(Sampler[SampleStateTorch], AsyncWorkerMixin):
         #     is the target vocab, whereas the output logits correspond to the draft
         #     vocab. Since the inputs/outputs are linked by TorchSampler.update_requests,
         #     they currently need to be handled within TorchSampler.
+        batch_next_tokens_cuda_int.clamp_(0, logits_cuda.size(1) - 1)
+
         if needs_d2t:
             self._apply_d2t(batch_next_tokens_cuda_int, model_outputs)
 

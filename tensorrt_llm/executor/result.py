@@ -378,6 +378,8 @@ class GenerationResultBase:
                         output.stop_reason = stop_reason
                         if not self.sampling_params.include_stop_str_in_output:
                             output.token_ids = output.token_ids[:-len(stop_ids)]
+                            if output.logprobs:
+                                output.logprobs = output.logprobs[:-len(stop_ids)]
                         break
             elif finish_reasons[src_idx] == tllm.FinishReason.LENGTH:
                 output.finish_reason = 'length'

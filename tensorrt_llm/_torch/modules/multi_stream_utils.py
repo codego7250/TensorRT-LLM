@@ -57,7 +57,7 @@ def maybe_execute_in_parallel(
         tuple[Any, Any]: the return values of fn0() and fn1()
     """
 
-    multi_stream = do_multi_stream() and aux_stream is not None
+    multi_stream = do_multi_stream() and aux_stream is not None and False
 
     if multi_stream:
         event0.record()
