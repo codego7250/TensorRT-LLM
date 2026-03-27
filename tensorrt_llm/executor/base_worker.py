@@ -567,6 +567,11 @@ class BaseWorker(GenerationExecutor):
             executor_request.py_num_logprobs = request.sampling_params.logprobs
             executor_request.py_lora_path = py_lora_path
             executor_request.py_logprobs_mode = request.sampling_params.logprobs_mode
+            executor_request.py_context_logits_auto_enabled = (
+                request.sampling_params._context_logits_auto_enabled
+                or (self._is_pytorch_backend
+                    and request.sampling_params.prompt_logprobs is not None
+                    and not request.sampling_params.return_context_logits))
 
             # here we add executor_request.py_disaggregated_params= request.disaggregated_params for python cache transceiver
             if self._is_pytorch_backend and request.disaggregated_params is not None:

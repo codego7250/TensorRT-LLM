@@ -985,10 +985,47 @@ def compute_logprobs(
             - generation: Optional[List[Dict[token_id, Logprob]]] logprobs for generated tokens.
     """
 
+    def _topk_logprobs_chunk(logits_chunk: torch.Tensor, top_k: int,
+                             tokens: Optional[list[int]],
+                             offset: int) -> TokenLogprobs:
+        """Process a single chunk of logits on GPU and return logprobs."""
+        logprobs = F.log_softmax(logits_chunk.to("cuda", dtype=torch.float32),
+                                 dim=-1)
+        chunk_len = logprobs.size(0)
+
+        if top_k == 0:
+            results: TokenLogprobs = []
+            if tokens is not None:
+                for t in range(chunk_len):
+                    token_id = tokens[offset + t]
+                    token_logprob = logprobs[t, token_id].item()
+                    rank = (logprobs[t] > token_logprob).sum().item() + 1
+                    results.append(
+                        {token_id: Logprob(logprob=token_logprob, rank=rank)})
+            return results
+
+        topk_vals, topk_indices = torch.topk(logprobs, k=top_k, dim=-1)
+
+        results: TokenLogprobs = []
+        for t in range(chunk_len):
+            token_dict = {
+                idx.item(): Logprob(logprob=val.item(), rank=r + 1)
+                for r, (val, idx) in enumerate(
+                    zip(topk_vals[t], topk_indices[t]))
+            }
+            if tokens is not None:
+                token_id = tokens[offset + t]
+                if token_id not in token_dict:
+                    token_logprob = logprobs[t, token_id].item()
+                    rank = (logprobs[t] > token_logprob).sum().item() + 1
+                    token_dict[token_id] = Logprob(logprob=token_logprob,
+                                                   rank=rank)
+            results.append(token_dict)
+        return results
+
     def _topk_logprobs(logits: torch.Tensor, top_k: int,
                        tokens: Optional[list[int]]) -> TokenLogprobs:
         if logits.dim() == 3:
-            # reshape from [1, T, V] to [T, V]
             logits = logits.squeeze(0)
 
         if tokens is not None and logits.size(0) > len(tokens):
@@ -996,43 +1033,20 @@ def compute_logprobs(
             # than output tokens.
             logits = logits[:len(tokens)]
 
-        logprobs = F.log_softmax(logits.to("cuda", dtype=torch.float32), dim=-1)
+        num_tokens = logits.size(0)
 
-        # only return sampled token
-        if top_k == 0:
-            results: TokenLogprobs = []
-            if tokens is not None:
-                for t in range(logprobs.size(0)):
-                    token_id = tokens[t]
-                    token_logprob = logprobs[t, token_id].item()
-                    rank = (logprobs[t] > token_logprob).sum().item() + 1
-                    token_dict = {
-                        token_id: Logprob(logprob=token_logprob, rank=rank)
-                    }
-                    results.append(token_dict)
-            return results
+        if logits.is_cuda:
+            return _topk_logprobs_chunk(logits, top_k, tokens, 0)
 
-        topk_vals, topk_indices = torch.topk(logprobs, k=top_k, dim=-1)
-
+        # Process in chunks to bound GPU memory when logits are stored on CPU.
+        # Each chunk of 1024 tokens with vocab_size=131072 uses ~0.5 GiB GPU.
+        chunk_size = 1024
         results: TokenLogprobs = []
-        # for each token position
-        for t in range(logprobs.size(0)):
-            token_dict = {
-                idx.item(): Logprob(logprob=val.item(), rank=r + 1)
-                for r, (val,
-                        idx) in enumerate(zip(topk_vals[t], topk_indices[t]))
-            }
-
-            # If we have the sampled token list and it's not in top-k, add it
-            if tokens is not None:
-                token_id = tokens[t]
-                if token_id not in token_dict:
-                    token_logprob = logprobs[t, token_id].item()
-                    rank = (logprobs[t] > token_logprob).sum().item() + 1
-                    token_dict[token_id] = Logprob(logprob=token_logprob,
-                                                   rank=rank)
-
-            results.append(token_dict)
+        for start in range(0, num_tokens, chunk_size):
+            end = min(start + chunk_size, num_tokens)
+            chunk_results = _topk_logprobs_chunk(logits[start:end], top_k,
+                                                 tokens, start)
+            results.extend(chunk_results)
         return results
 
     prompt_logprobs = _topk_logprobs(
