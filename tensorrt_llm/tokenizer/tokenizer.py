@@ -295,10 +295,12 @@ class TransformersTokenizer(TokenizerBase):
             }
 
         decode_stream = states.get('decode_stream')
+        vocab_size = len(self.tokenizer)
         results = [
             result for tid in token_ids
-            if (result := decode_stream.step(self.tokenizer._tokenizer, tid)
-                ) is not None
+            if (result := decode_stream.step(
+                self.tokenizer._tokenizer,
+                int(tid) % vocab_size)) is not None
         ]
         curr_new_text = "".join(results)
         if clean_up_tokenization_spaces is None:

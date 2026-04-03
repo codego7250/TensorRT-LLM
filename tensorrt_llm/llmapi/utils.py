@@ -353,7 +353,8 @@ class ManagedThread(threading.Thread):
                 logger.error(
                     f"Error in thread {self.name}: {e}\n{traceback.format_exc()}"
                 )
-                self.error_queue.put(e)
+                if self.error_queue is not None:
+                    self.error_queue.put(e)
 
         logger.info(f"Thread {self.name} stopped.")
 

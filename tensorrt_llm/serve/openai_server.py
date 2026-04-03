@@ -381,9 +381,10 @@ class OpenAIServer:
     async def await_disconnected(self, raw_request: Request, promise):
         if raw_request is None:
             return
-        while not await raw_request.is_disconnected():
+        # Stop monitoring once either the client disconnects or request finishes.
+        while (not promise.finished) and (not await raw_request.is_disconnected()):
             await asyncio.sleep(1)
-        if not promise.finished:
+        if (not promise.finished) and (await raw_request.is_disconnected()):
             promise.abort()
             logger.info(
                 f"{raw_request.client} is disconnected, abort {promise.request_id}"
@@ -907,9 +908,25 @@ class OpenAIServer:
                 yield "data: [DONE]\n\n"
                 await self._extract_metrics(res, raw_request)
                 nvtx_mark("generation ends")
-            except:
+            except asyncio.CancelledError:
+                # Request task was cancelled (usually client disconnect / timeout):
+                # abort backend request and stop streaming quietly.
+                if not promise.finished:
+                    promise.abort()
+                return
+            except Exception:
                 logger.error(traceback.format_exc())
-                raise
+                error_data = json.dumps({
+                    "error": {
+                        "message": "Internal server error",
+                        "type": "server_error",
+                        "code": None,
+                        "param": None,
+                    }
+                })
+                yield f"data: {error_data}\n\n"
+                yield "data: [DONE]\n\n"
+                return
 
         try:
             conversation: List[ConversationMessage] = []
@@ -1030,8 +1047,12 @@ class OpenAIServer:
                 return JSONResponse(content=response.model_dump())
         except CppExecutorError:
             logger.error(traceback.format_exc())
-            # If internal executor error is raised, shutdown the server
-            signal.raise_signal(signal.SIGINT)
+            # Avoid force-shutting down uvicorn by default, which can leave
+            # subordinate MPI workers blocked in shutdown paths.
+            if os.getenv("TRTLLM_SHUTDOWN_ON_CPP_EXECUTOR_ERROR",
+                         "0") == "1":
+                signal.raise_signal(signal.SIGINT)
+            return self.create_error_response("Internal executor error")
         except Exception as e:
             logger.error(traceback.format_exc())
             return self.create_error_response(str(e))
@@ -1125,8 +1146,12 @@ class OpenAIServer:
 
         except CppExecutorError:
             logger.error(traceback.format_exc())
-            # If internal executor error is raised, shutdown the server
-            signal.raise_signal(signal.SIGINT)
+            # Avoid force-shutting down uvicorn by default, which can leave
+            # subordinate MPI workers blocked in shutdown paths.
+            if os.getenv("TRTLLM_SHUTDOWN_ON_CPP_EXECUTOR_ERROR",
+                         "0") == "1":
+                signal.raise_signal(signal.SIGINT)
+            return self.create_error_response("Internal executor error")
         except Exception as e:
             logger.error(traceback.format_exc())
             return self.create_error_response(str(e))
@@ -1138,7 +1163,12 @@ class OpenAIServer:
                 promise: RequestOutput,
                 postproc_params: Optional[PostprocParams]
         ) -> CompletionResponse:
-            response = await promise
+            try:
+                response = await promise
+            except asyncio.CancelledError:
+                if not promise.finished:
+                    promise.abort()
+                raise
             if not self.postproc_worker_enabled:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
                 pp_result = post_processor(response, args)
@@ -1183,6 +1213,7 @@ class OpenAIServer:
         async def completion_generator(promise: RequestOutput,
                                        params: Optional[PostprocParams]):
             try:
+                output = None
                 async for output in promise:
                     if not self.postproc_worker_enabled:
                         post_processor, args = params.post_processor, params.postproc_args
@@ -1191,7 +1222,14 @@ class OpenAIServer:
                         pp_result = output.outputs[0]._postprocess_result
                     for pp_res in pp_result:
                         yield pp_res
-                await self._extract_metrics(output, raw_request)
+                if output is not None:
+                    await self._extract_metrics(output, raw_request)
+            except asyncio.CancelledError:
+                # Request task was cancelled (usually client disconnect / timeout):
+                # abort backend request and stop streaming quietly.
+                if not promise.finished:
+                    promise.abort()
+                return
             except Exception as e:
                 logger.error(traceback.format_exc())
                 # StreamingResponse commits HTTP 200 before the first
@@ -1210,32 +1248,66 @@ class OpenAIServer:
                 yield "data: [DONE]\n\n"
 
         async def merge_generators(generators: List[AsyncIterator[Any]]):
-            result_queue = asyncio.Queue()
-            finished = [False] * len(generators)
+            # Bounded queue to apply backpressure under high-volume streaming.
+            result_queue = asyncio.Queue(maxsize=max(8, len(generators) * 8))
+            done_sentinel = object()
 
             async def producer(generator: AsyncIterator[Any], idx: int):
-                async for output in generator:
-                    await result_queue.put(output)
-                finished[idx] = True
+                try:
+                    async for output in generator:
+                        await result_queue.put(output)
+                except Exception as e:
+                    # Forward producer failures to the consumer loop.
+                    await result_queue.put(e)
+                finally:
+                    # Always notify completion, even on exceptions/cancellation.
+                    await result_queue.put(done_sentinel)
 
             tasks = [
                 asyncio.create_task(producer(generator, idx))
                 for idx, generator in enumerate(generators)
             ]
 
-            while not all(finished) or not result_queue.empty():
-                output = await result_queue.get()
-                yield output
-            await asyncio.gather(*tasks)
+            try:
+                completed = 0
+                while completed < len(generators):
+                    item = await result_queue.get()
+                    if item is done_sentinel:
+                        completed += 1
+                        continue
+                    if isinstance(item, Exception):
+                        raise item
+                    yield item
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
         async def generator_wrapper(generator: AsyncIterator[Any]):
-            first_response = await anext(generator)
-            raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds(
-            )
-            yield first_response
-            async for output in generator:
-                yield output
-            yield "data: [DONE]\n\n"
+            try:
+                first_response = await anext(generator)
+                raw_request.state.server_first_token_time = get_steady_clock_now_in_seconds(
+                )
+                yield first_response
+                async for output in generator:
+                    yield output
+                yield "data: [DONE]\n\n"
+            except StopAsyncIteration:
+                # If upstream generator ends before producing any chunk,
+                # still terminate stream cleanly.
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                error_data = json.dumps({
+                    "error": {
+                        "message": str(e),
+                        "type": "server_error",
+                        "code": None,
+                        "param": None,
+                    }
+                })
+                yield f"data: {error_data}\n\n"
+                yield "data: [DONE]\n\n"
 
         try:
             if isinstance(request.prompt, str) or \
@@ -1262,7 +1334,10 @@ class OpenAIServer:
                 postproc_args = CompletionPostprocArgs.from_request(request)
                 postproc_args.prompt_idx = idx
                 if request.echo:
-                    postproc_args.prompt = prompt
+                    if isinstance(prompt, list):
+                        postproc_args.prompt = self.tokenizer.decode(prompt)
+                    else:
+                        postproc_args.prompt = prompt
                 postproc_params = PostprocParams(
                     post_processor=completion_stream_post_processor
                     if request.stream else completion_response_post_processor,
@@ -1283,6 +1358,9 @@ class OpenAIServer:
                         if extra_processed_inputs is not None else None)
                 else:
                     tokens_prompt = prompt
+
+                if request.echo and request.logprobs:
+                    postproc_args.prompt_token_ids = tokens_prompt["prompt_token_ids"]
 
                 promise = self.generator.generate_async(
                     inputs=tokens_prompt,
@@ -1322,8 +1400,12 @@ class OpenAIServer:
                 return JSONResponse(content=response.model_dump())
         except CppExecutorError:
             logger.error(traceback.format_exc())
-            # If internal executor error is raised, shutdown the server
-            signal.raise_signal(signal.SIGINT)
+            # Avoid force-shutting down uvicorn by default, which can leave
+            # subordinate MPI workers blocked in shutdown paths.
+            if os.getenv("TRTLLM_SHUTDOWN_ON_CPP_EXECUTOR_ERROR",
+                         "0") == "1":
+                signal.raise_signal(signal.SIGINT)
+            return self.create_error_response("Internal executor error")
         except Exception as e:
             logger.error(traceback.format_exc())
             return self.create_error_response(str(e))
@@ -1337,16 +1419,21 @@ class OpenAIServer:
 
         async def create_streaming_generator(promise: RequestOutput,
                                              postproc_params: PostprocParams):
-            async for res in promise:
-                if not self.postproc_worker_enabled:
-                    post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
-                    pp_results = post_processor(res, args)
-                else:
-                    pp_results = res.outputs[0]._postprocess_result
-                for pp_res in pp_results:
-                    yield pp_res
+            try:
+                async for res in promise:
+                    if not self.postproc_worker_enabled:
+                        post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
+                        pp_results = post_processor(res, args)
+                    else:
+                        pp_results = res.outputs[0]._postprocess_result
+                    for pp_res in pp_results:
+                        yield pp_res
 
-            yield "data: [DONE]\n\n"
+                yield "data: [DONE]\n\n"
+            except asyncio.CancelledError:
+                if not promise.finished:
+                    promise.abort()
+                return
 
         try:
             # Initialize HarmonyAdapter
@@ -1438,7 +1525,12 @@ class OpenAIServer:
         async def create_response(
                 promise: RequestOutput,
                 postproc_params: PostprocParams) -> ResponsesResponse:
-            await promise.aresult()
+            try:
+                await promise.aresult()
+            except asyncio.CancelledError:
+                if not promise.finished:
+                    promise.abort()
+                raise
             if self.postproc_worker_enabled:
                 response = promise.outputs[0]._postprocess_result
             else:
@@ -1460,18 +1552,23 @@ class OpenAIServer:
 
         async def create_streaming_generator(promise: RequestOutput,
                                              postproc_params: PostprocParams):
-            post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
-            streaming_processor = args.streaming_processor
-            initial_responses = streaming_processor.get_initial_responses()
-            for initial_response in initial_responses:
-                yield initial_response
+            try:
+                post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
+                streaming_processor = args.streaming_processor
+                initial_responses = streaming_processor.get_initial_responses()
+                for initial_response in initial_responses:
+                    yield initial_response
 
-            async for res in promise:
-                pp_results = res.outputs[
-                    0]._postprocess_result if self.postproc_worker_enabled else post_processor(
-                        res, args)
-                for pp_res in pp_results:
-                    yield pp_res
+                async for res in promise:
+                    pp_results = res.outputs[
+                        0]._postprocess_result if self.postproc_worker_enabled else post_processor(
+                            res, args)
+                    for pp_res in pp_results:
+                        yield pp_res
+            except asyncio.CancelledError:
+                if not promise.finished:
+                    promise.abort()
+                return
 
         try:
             if request.background:
@@ -1561,8 +1658,12 @@ class OpenAIServer:
                 return JSONResponse(content=response.model_dump())
         except CppExecutorError:
             logger.error(traceback.format_exc())
-            # If internal executor error is raised, shutdown the server
-            signal.raise_signal(signal.SIGINT)
+            # Avoid force-shutting down uvicorn by default, which can leave
+            # subordinate MPI workers blocked in shutdown paths.
+            if os.getenv("TRTLLM_SHUTDOWN_ON_CPP_EXECUTOR_ERROR",
+                         "0") == "1":
+                signal.raise_signal(signal.SIGINT)
+            return self.create_error_response("Internal executor error")
         except Exception as e:
             logger.error(traceback.format_exc())
             return self.create_error_response(str(e))

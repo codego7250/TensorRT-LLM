@@ -172,7 +172,11 @@ class GenerationExecutorProxy(GenerationExecutor):
             nonlocal event_loop
             nonlocal async_queues
 
-            queue = self._results[client_id].queue
+            result = self._results.get(client_id)
+            if result is None:
+                # Stale/late response after request was already finalized/aborted.
+                return
+            queue = result.queue
             if isinstance(queue, _SyncQueue):
                 queue.put_nowait(res)
                 async_queues.append(queue)

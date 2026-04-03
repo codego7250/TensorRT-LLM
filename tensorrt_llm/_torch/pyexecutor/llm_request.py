@@ -293,18 +293,23 @@ class PyResult:
                  exclude_last_generation_logits: bool = False,
                  use_chunked_generation_logits: bool = True,
                  chunk_size: int = 8,
-                 additional_outputs: Optional[List[str]] = None):
+                 additional_outputs: Optional[List[str]] = None,
+                 context_logits_on_host: bool = False):
         if streaming and use_chunked_generation_logits:
             assert chunk_size == 1, "chunk_size must be 1 in streaming mode"
         self._streaming = streaming
         self._chunk_size = chunk_size
         self._exclude_last_generation_logits = exclude_last_generation_logits
 
-        # Note that in C++ implemnetation both context logits and generation logits are stored on host memory.
-        # Here we only use host memory for generation logits if in chunked model.
+        # Note that in C++ implementation both context logits and generation logits are stored on host memory.
+        # When context logits are only needed for prompt_logprobs (not explicitly requested by user),
+        # store on CPU to avoid GPU OOM for long prompts. A 16K prompt with vocab_size=131072
+        # would require ~8 GiB on GPU. CPU storage is sufficient because compute_logprobs
+        # processes in chunks and clear_context_logits drops them after postprocessing.
+        context_logits_on_device = use_device_memory and not context_logits_on_host
         self._context_logits = LogitsStorage(
             seq_length=prompt_len,
-            use_device_memory=use_device_memory,
+            use_device_memory=context_logits_on_device,
             extra_token_for_overlap_scheduler=False,
             use_chunked_generation_logits=False
         ) if return_context_logits else None
@@ -600,6 +605,8 @@ class LlmResponse:
             py_result = self.result._py_result
             if hasattr(py_result, '_context_logits'):
                 py_result._context_logits = None
+            if hasattr(py_result, 'diff') and py_result.diff.context_logits_list:
+                py_result.diff.context_logits_list.clear()
 
 
 class LlmRequest(tensorrt_llm.bindings.internal.batch_manager.LlmRequest):
@@ -615,6 +622,7 @@ class LlmRequest(tensorrt_llm.bindings.internal.batch_manager.LlmRequest):
             return_context_logits: bool = False,
             return_generation_logits: bool = False,
             return_logits_device_memory: bool = True,
+            context_logits_on_host: bool = False,
             exclude_last_generation_logits: bool = False,
             additional_outputs: Optional[List[str]] = None,
             return_perf_metrics: bool = False,
@@ -729,6 +737,7 @@ class LlmRequest(tensorrt_llm.bindings.internal.batch_manager.LlmRequest):
             return_generation_logits=return_generation_logits,
             exclude_last_generation_logits=exclude_last_generation_logits,
             use_chunked_generation_logits=self.py_use_chunked_generation_logits,
+            context_logits_on_host=context_logits_on_host,
             chunk_size=self.py_logits_chunk_size,
             additional_outputs=additional_outputs)
         self.child_requests = []
@@ -999,6 +1008,9 @@ def executor_request_to_llm_request(
         num_logprobs=getattr(executor_request, "py_num_logprobs", 0),
         return_context_logits=executor_request.output_config.
         return_context_logits,
+        context_logits_on_host=getattr(executor_request,
+                                       "py_context_logits_auto_enabled",
+                                       False),
         return_perf_metrics=executor_request.output_config.return_perf_metrics,
         return_generation_logits=executor_request.output_config.
         return_generation_logits,

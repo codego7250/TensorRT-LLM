@@ -179,7 +179,9 @@ class OpenAIDisaggServer:
     def _handle_exception(self, exception):
         if isinstance(exception, CppExecutorError):
             logger.error("CppExecutorError: ", traceback.format_exc())
-            signal.raise_signal(signal.SIGINT)
+            if os.getenv("TRTLLM_SHUTDOWN_ON_CPP_EXECUTOR_ERROR", "0") == "1":
+                signal.raise_signal(signal.SIGINT)
+            raise HTTPException(status_code=500, detail="Internal executor error")
         elif isinstance(exception, HTTPException):
             self._perf_metrics_collector.http_exceptions.inc()
             logger.error(f"HTTPException {exception.status_code} {exception.detail}: ", traceback.format_exc())

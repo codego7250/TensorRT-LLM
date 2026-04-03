@@ -1415,6 +1415,8 @@ class PyExecutor:
                                 self.guided_decoder.init_disagg_gen_requests()
 
                             batch_outputs = self._forward_step(scheduled_batch)
+                            if batch_outputs is None:
+                                continue
 
                             guided_decoder_failed_requests = None
                             if self.guided_decoder is not None:
@@ -1441,7 +1443,8 @@ class PyExecutor:
                                 sample_state = self._sample_async(
                                     scheduled_batch, batch_outputs)
 
-                            assert sample_state is not None, "Sampling failed"
+                            if sample_state is None:
+                                continue
 
                             # Handle guided decoder errors after _sample_async to avoid state conflicts.
                             # If called before, failed requests would be marked as GENERATION_COMPLETE,
@@ -2017,6 +2020,8 @@ class PyExecutor:
                         if self.dwdp_manager is not None:
                             self.dwdp_manager.prefetch_first_layers()
                         batch_outputs = self._forward_step(scheduled_batch)
+                    if batch_outputs is None:
+                        continue
 
                     guided_decoder_failed_requests = None
                     if self.guided_decoder is not None:
@@ -2027,6 +2032,8 @@ class PyExecutor:
                             None, gpu_sample_end) as sample_timing:
                         sample_state = self._sample_async(
                             scheduled_batch, batch_outputs)
+                    if sample_state is None:
+                        continue
 
                     self.perf_manager.save_timing_to_requests(
                         scheduled_batch.all_requests(), gpu_forward_start,
@@ -2262,6 +2269,7 @@ class PyExecutor:
                 # we need to delay the update of the previous batch's sample state,
                 # and let the later iteration to update it.
                 should_process_previous_batch = can_queue or not can_queue_this_rank
+                current_batch_failed = False
                 if can_queue:
 
                     # The generation requests that do not have batch_idx
@@ -2321,6 +2329,7 @@ class PyExecutor:
                         batch_outputs = self._forward_step(
                             scheduled_batch, previous_tensors_device,
                             num_accepted_tokens_device)
+                    current_batch_failed = batch_outputs is None
 
                 if self.previous_batch is not None and should_process_previous_batch:
                     self._update_requests(self.previous_batch.sample_state)
@@ -2335,7 +2344,8 @@ class PyExecutor:
                 if not self._scheduler_manages_kv_suspend:
                     self._pause_requests(scheduled_batch.paused_requests)
 
-                if can_queue:
+                sample_state = None
+                if can_queue and not current_batch_failed:
                     guided_decoder_failed_requests = None
                     with self.perf_manager.record_perf_events(
                             None, gpu_sample_end) as sample_timing:
@@ -2348,30 +2358,33 @@ class PyExecutor:
                         sample_state = self._sample_async(
                             scheduled_batch, batch_outputs)
 
-                    assert sample_state is not None, "Sampling failed"
+                    current_batch_failed = sample_state is None
 
-                    # Handle guided decoder errors after _sample_async to avoid state conflicts.
-                    # If called before, failed requests would be marked as GENERATION_COMPLETE,
-                    # causing _sample_async to fail when accessing context_chunk_size property.
-                    self._handle_guided_decoder_errors(
-                        scheduled_batch, guided_decoder_failed_requests)
-                    self._update_request_states(scheduled_batch)
+                    if not current_batch_failed:
+                        # Handle guided decoder errors after _sample_async to avoid state conflicts.
+                        # If called before, failed requests would be marked as GENERATION_COMPLETE,
+                        # causing _sample_async to fail when accessing context_chunk_size property.
+                        self._handle_guided_decoder_errors(
+                            scheduled_batch, guided_decoder_failed_requests)
+                        self._update_request_states(scheduled_batch)
 
                 if self.previous_batch is not None and should_process_previous_batch:
                     self._process_previous_batch()
                     self.perf_manager.compute_batch_gpu_times(
                         self.previous_batch.scheduled_requests.all_requests())
+                    if current_batch_failed:
+                        self.previous_batch = None
                 else:
                     self._enqueue_responses([])
 
                 # Call set_exclude_last_generation_logits after _process_previous_batch.
                 # If set before, the response of a request may be incorrect, as it will
                 # use the wrong indices for generation logits when streaming is enabled.
-                if can_queue:
+                if can_queue and not current_batch_failed:
                     self._update_generation_requests_that_will_complete_next_iteration(
                         scheduled_batch.generation_requests)
 
-                if can_queue:
+                if can_queue and not current_batch_failed:
                     self.perf_manager.save_timing_to_requests(
                         scheduled_batch.all_requests(), gpu_forward_start,
                         gpu_forward_end, gpu_sample_end, fwd_timing.start_time,
@@ -2386,6 +2399,8 @@ class PyExecutor:
                         sample_state=sample_state,
                         iter_start_time=iter_start_time,
                         iter_stats=iter_stats)
+                elif current_batch_failed and should_process_previous_batch:
+                    self.previous_batch = None
                 elif not can_queue_this_rank:
                     # If the batch is empty on this rank, we need to clear the previous batch.
                     self.previous_batch = None
@@ -3239,7 +3254,8 @@ class PyExecutor:
             error_msg = str(e)
             logger.error(
                 f"Encountered an error in forward function: {error_msg}")
-            self._handle_errors(error_msg)
+            self._handle_errors(error_msg,
+                                requests=scheduled_requests.all_requests())
             return None
 
     def _update_generation_requests_that_will_complete_next_iteration(
@@ -3339,7 +3355,9 @@ class PyExecutor:
             traceback.print_exc()
             error_msg = str(e)
             logger.error(f"Encountered an error in sampling: {error_msg}")
-            self._handle_errors(error_msg)
+            self._handle_errors(error_msg,
+                                requests=scheduled_batch.all_requests())
+            return None
 
     @nvtx_range("_setup_sampler_step")
     def _setup_sampler_step(self, requests: ScheduledRequests):
@@ -3349,7 +3367,7 @@ class PyExecutor:
             traceback.print_exc()
             error_msg = str(e)
             logger.error(f"Encountered an error in sampling: {error_msg}")
-            self._handle_errors(error_msg)
+            self._handle_errors(error_msg, requests=requests.all_requests())
 
     @nvtx_range("_update_requests")
     def _update_requests(self,
@@ -3361,7 +3379,7 @@ class PyExecutor:
             traceback.print_exc()
             error_msg = str(e)
             logger.error(f"Encountered an error in sampling: {error_msg}")
-            self._handle_errors(error_msg)
+            self._handle_errors(error_msg, requests=sample_state.requests)
 
     def _handle_errors(self,
                        error_msg: Optional[str] = None,
@@ -3369,7 +3387,8 @@ class PyExecutor:
                        requests: Optional[List[LlmRequest]] = None):
         error_responses: Dict[int, LlmResponse] = {}
         error_msg = error_msg or "error"
-        failed_requests = requests if requests is not None else self.active_requests
+        failed_requests = list(requests) if requests is not None else list(
+            self.active_requests)
         for request in failed_requests:
             req_id = request.py_request_id
             request.state = LlmRequestState.GENERATION_COMPLETE

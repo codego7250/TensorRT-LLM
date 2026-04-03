@@ -6,7 +6,7 @@ import pickle  # nosec B403
 import threading
 import time
 import traceback
-from queue import Queue
+from queue import Empty, Queue
 from typing import Any, Optional
 
 import zmq
@@ -490,29 +490,37 @@ class FusedIpcQueue:
         self._message_counter = 0
         self._obj_counter = 0
         self._send_thread = None
+        self._send_stop_event = None
         self.sending_queue = Queue() if fuse_message else None
 
     def setup_sender(self):
         if not self.fuse_message or self._send_thread is not None:
             return
 
+        self._send_stop_event = threading.Event()
+
         def send_task():
-            while True:
-                qsize = self.sending_queue.qsize()
-                if qsize > 0:
-                    qsize = min(self.fuse_size, qsize)
-                    self._obj_counter += qsize
-                    message = [
-                        self.sending_queue.get_nowait() for _ in range(qsize)
-                    ]
+            qsize = self.sending_queue.qsize()
+            if qsize > 0:
+                qsize = min(self.fuse_size, qsize)
+                message = []
+                for _ in range(qsize):
+                    try:
+                        message.append(self.sending_queue.get_nowait())
+                    except Empty:
+                        break
+                if message:
+                    self._obj_counter += len(message)
                     self.queue.put(message)
                     self._message_counter += 1
-                else:
-                    time.sleep(0.001)
+            else:
+                time.sleep(0.001)
+            return True
 
         self._send_thread = ManagedThread(send_task,
                                           name="fused_send_thread",
-                                          error_queue=self.error_queue)
+                                          error_queue=self.error_queue,
+                                          stop_event=self._send_stop_event)
         self._send_thread.start()
 
     def put(self, obj: Any):
@@ -540,12 +548,13 @@ class FusedIpcQueue:
                 "green")
 
     def close(self):
-        self.queue.close()
-
         if self._send_thread is not None:
             self._send_thread.stop()
-            self._send_thread.join()
+            self._send_thread.join(timeout=2.0)
             self._send_thread = None
+            self._send_stop_event = None
+
+        self.queue.close()
 
         if enable_llm_debug():
             self.print_fuse_stats()
